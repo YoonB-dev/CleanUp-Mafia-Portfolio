@@ -1,5 +1,5 @@
-# CleanUp-Spy-Portfolio
-> ⚠️ 이 프로젝트는 클린업 스파이(가명)의 전체 프로덕션 리포지토리를 공개하는 것이 아니라, 핵심 구조만 정리한 형태입니다.
+# CleanUp-Mafia-Portfolio
+> ⚠️ 이 프로젝트는 클린업 마피아의 전체 프로덕션 리포지토리를 공개하는 것이 아니라, 핵심 구조만 정리한 형태입니다.
 
 ## 🎬 Gameplay Video
 
@@ -31,7 +31,7 @@
 
 </table>
 
-# CleanUp-Spy-Portfolio
+# CleanUp-Mafia-Portfolio
 
 Unity 기반 멀티플레이어 추리 게임 프로젝트로, 로비 구성, 역할 배정, 아이템 상호작용, 동기화된 입력 처리, 네트워크 기반 게임 루프를 포함합니다.
 

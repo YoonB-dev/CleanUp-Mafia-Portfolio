@@ -1,6 +1,6 @@
 # 주요 작업
 
-**클린업 스파이**는 Unity와 Netcode for GameObjects(NGO)로 만든 멀티플레이 파티 게임입니다. 호스트가 서버를 겸하고, Steam 릴레이로 접속합니다. 저는 클라이언트 프로그래머 2명 중 한 명으로 아이템·페인트·점수·게임 진행 등 게임플레이 시스템을 맡았습니다. 담당 범위는 [AUTHORSHIP.md](AUTHORSHIP.md)에 파일 단위로 정리했습니다.
+**클린업 마피아**는 Unity와 Netcode for GameObjects(NGO)로 만든 멀티플레이 파티 게임입니다. 호스트가 서버를 겸하고, Steam 릴레이로 접속합니다. 저는 클라이언트 프로그래머 2명 중 한 명으로 아이템·페인트·점수·게임 진행 등 게임플레이 시스템을 맡았습니다. 담당 범위는 [AUTHORSHIP.md](AUTHORSHIP.md)에 파일 단위로 정리했습니다.
 
 먼저 봐 주셨으면 하는 작업은 세 가지입니다.
 
@@ -39,7 +39,7 @@ if (currentItem.TryGetComponent<IUsableItem>(out var usableItem))
 }
 ```
 
-처음에는 흡입기 전용 입력 함수, 켜고 끄는 ServerRpc, "요청한 게 들고 있는 아이템인지" 확인하는 코드가 모두 플레이어 코드 안에 있어서 도구가 늘 때마다 플레이어 코드도 같이 커졌습니다. 이 코드를 인터페이스 뒤로 옮겼고([#42](https://github.com/YoonB-dev/CleanUp-Spy-Portfolio/commit/7ea6c9d)), 이어서 청소 도구와 카메라 촬영도 같은 방식으로 옮겼습니다([9e0ef82](https://github.com/YoonB-dev/CleanUp-Spy-Portfolio/commit/9e0ef82)). 지금 [`PlayerInteraction`](../Scripts/Player/PlayerInteraction.cs)은 테이저건·흡입기·청소 도구·카메라 클래스를 하나도 직접 참조하지 않습니다. 새 도구는 인터페이스만 구현하면 기존 입력에 바로 연결됩니다.
+처음에는 흡입기 전용 입력 함수, 켜고 끄는 ServerRpc, "요청한 게 들고 있는 아이템인지" 확인하는 코드가 모두 플레이어 코드 안에 있어서 도구가 늘 때마다 플레이어 코드도 같이 커졌습니다. 이 코드를 인터페이스 뒤로 옮겼고([#42](https://github.com/YoonB-dev/CleanUp-Mafia-Portfolio/commit/7ea6c9d)), 이어서 청소 도구와 카메라 촬영도 같은 방식으로 옮겼습니다([9e0ef82](https://github.com/YoonB-dev/CleanUp-Mafia-Portfolio/commit/9e0ef82)). 지금 [`PlayerInteraction`](../Scripts/Player/PlayerInteraction.cs)은 테이저건·흡입기·청소 도구·카메라 클래스를 하나도 직접 참조하지 않습니다. 새 도구는 인터페이스만 구현하면 기존 입력에 바로 연결됩니다.
 
 - 입력 분기: [OnUseItem](../Scripts/Player/PlayerInteraction.cs#L622), [OnAim](../Scripts/Player/PlayerInteraction.cs#L514), [OnCapture](../Scripts/Player/PlayerInteraction.cs#L525)
 - 구현 예: [TaserGun.OnUse](../Scripts/Item/TaserGun/TaserGun.cs#L55), [MagnetAttractor.OnUse](../Scripts/Item/MagnetAttractor.cs#L81), [PaintCleaner.OnUse](../Scripts/Item/PaintGun/PaintCleaner.cs#L69), [PolaroidCamera.Capture](../Scripts/PolaroidCamera/PolaroidCamera.cs#L143)
@@ -83,7 +83,7 @@ if (currentItem.TryGetComponent<IUsableItem>(out var usableItem))
 
 ### 소유권 문제 해결 사례
 
-파쇄기처럼 줍지 않고 끄는 오브젝트는 소유권이 서버에 있어서, 클라이언트가 그 오브젝트의 ServerRpc를 직접 부르면 거부되고 호스트에서만 끌렸습니다. 요청을 **플레이어가 소유한 오브젝트의 ServerRpc로 받고** 서버가 대상의 로직을 호출하게 바꿨습니다. 끄는 동안의 위치(계단 오르내림, 낭떠러지 낙하)도 서버가 계산합니다. ([#45](https://github.com/YoonB-dev/CleanUp-Spy-Portfolio/commit/c118661), [RequestStartDragServerRpc](../Scripts/Player/PlayerInteraction.cs#L225), [DraggableObject](../Scripts/Item/Interface/DraggableObject.cs#L173))
+파쇄기처럼 줍지 않고 끄는 오브젝트는 소유권이 서버에 있어서, 클라이언트가 그 오브젝트의 ServerRpc를 직접 부르면 거부되고 호스트에서만 끌렸습니다. 요청을 **플레이어가 소유한 오브젝트의 ServerRpc로 받고** 서버가 대상의 로직을 호출하게 바꿨습니다. 끄는 동안의 위치(계단 오르내림, 낭떠러지 낙하)도 서버가 계산합니다. ([#45](https://github.com/YoonB-dev/CleanUp-Mafia-Portfolio/commit/c118661), [RequestStartDragServerRpc](../Scripts/Player/PlayerInteraction.cs#L225), [DraggableObject](../Scripts/Item/Interface/DraggableObject.cs#L173))
 
 ---
 
@@ -93,7 +93,7 @@ if (currentItem.TryGetComponent<IUsableItem>(out var usableItem))
 
 ### 어떤 메시든 같은 크기로 칠해지는 브러시
 
-처음에는 레이가 맞은 지점의 UV 좌표에 브러시를 찍어서, UV가 펼쳐진 정도에 따라 표면마다 자국 크기가 달랐습니다. 브러시를 **월드 좌표 기준**으로 다시 만들었습니다([3c17719](https://github.com/YoonB-dev/CleanUp-Spy-Portfolio/commit/3c17719)).
+처음에는 레이가 맞은 지점의 UV 좌표에 브러시를 찍어서, UV가 펼쳐진 정도에 따라 표면마다 자국 크기가 달랐습니다. 브러시를 **월드 좌표 기준**으로 다시 만들었습니다([3c17719](https://github.com/YoonB-dev/CleanUp-Mafia-Portfolio/commit/3c17719)).
 
 - 표면 메시를 UV 위치에 펼쳐 렌더 텍스처에 그리면, 셰이더는 각 픽셀이 메시의 어느 월드 지점인지 압니다. 브러시 중심과의 **월드 거리(미터)**로 칠할지 정하므로 어떤 메시든 같은 반경이면 같은 크기 자국이 나고, 모서리에 찍으면 양쪽 면에 걸쳐 칠해집니다. ([DrawAt](../Scripts/Item/PaintGun/PaintSurfaceManager.cs#L149), [PaintBrush.shader Pass 0](../Shaders/Paint/PaintBrush.shader#L49))
 - 원본 머테리얼은 건드리지 않고 같은 메시의 투명 오버레이를 자동으로 만듭니다. 칠할 오브젝트에는 컴포넌트 하나만 붙이면 됩니다. 마스크 해상도는 표면 크기에 따라 512~4096으로 정합니다. ([PaintableSurface](../Scripts/Item/PaintGun/PaintableSurface.cs#L96), [PaintOverlayURP.shader](../Shaders/Paint/PaintOverlayURP.shader))
