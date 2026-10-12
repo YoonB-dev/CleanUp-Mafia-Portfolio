@@ -4,11 +4,22 @@
 
 먼저 봐 주셨으면 하는 작업은 세 가지입니다.
 
-| | 작업 | 한 줄 요약 | 먼저 볼 코드 |
-|---|---|---|---|
-| 1 | 동작 단위 아이템 인터페이스 | 새 도구를 추가해도 플레이어 코드는 바뀌지 않는 구조 | [PickupContracts](../Scripts/Item/Interface/PickupContracts.cs), [PlayerInteraction.OnUseItem](../Scripts/Player/PlayerInteraction.cs#L622) |
-| 2 | 클라이언트는 행동만, 결과는 호스트가 | 모든 게임 행동을 "요청 → 서버 검증 → 결과 전파"로 통일 | [RequestPaintServerRpc](../Scripts/Player/Mafia/MafiaPaintAction.cs#L302), [PickupItem](../Scripts/Item/PickupItem.cs#L112) |
-| 3 | 페인트·오염도 시스템 | 어떤 메시에든 칠하고, 칠한 면적을 서버가 GPU로 집계 | [PaintSurfaceManager](../Scripts/Item/PaintGun/PaintSurfaceManager.cs), [PaintBrush.shader](../Shaders/Paint/PaintBrush.shader) |
+| | 작업 | 한 줄 요약 |
+|---|---|---|
+| 1 | 동작 단위 아이템 인터페이스 | 새 도구를 추가해도 플레이어 코드는 바뀌지 않는 구조 |
+| 2 | 클라이언트는 행동만, 결과는 호스트가 | 모든 게임 행동을 "요청 → 서버 검증 → 결과 전파"로 통일 |
+| 3 | 페인트·오염도 시스템 | 어떤 메시에든 칠하고, 칠한 면적을 서버가 GPU로 집계 |
+
+## 10분 읽기 순서
+
+코드만 빠르게 보실 때는 아래 순서를 추천합니다. 위 세 작업을 차례로 지나갑니다.
+
+1. [PickupContracts](../Scripts/Item/Interface/PickupContracts.cs), [IUsableItem](../Scripts/Item/Interface/IUsableItem.cs) — 동작 단위로 나눈 인터페이스 정의입니다.
+2. [PlayerInteraction.OnUseItem](../Scripts/Player/PlayerInteraction.cs#L622) — 플레이어 입력은 들고 있는 아이템이 `IUsableItem`을 구현했는지만 보고 호출합니다.
+3. [TaserGun](../Scripts/Item/TaserGun/TaserGun.cs#L55) — 한 파일에서 인터페이스 구현(`OnUse`)과 서버 검증(`RequestFireServerRpc`)을 함께 볼 수 있습니다. 서버가 든 사람인지, 탄약·발사 간격을 확인하고 든 사람의 시점에서 탄을 생성합니다.
+4. [MafiaPaintAction.RequestPaintServerRpc](../Scripts/Player/Mafia/MafiaPaintAction.cs#L302) — 요청 → 서버 검증 → 전파의 기본 형태입니다. 검증을 통과하면 텍스처가 아니라 그리기 명령(표면 ID, 지점, 반경)만 전파합니다.
+5. [PaintSurfaceManager.DrawAt](../Scripts/Item/PaintGun/PaintSurfaceManager.cs#L149) → [RequestContaminationReadback](../Scripts/Item/PaintGun/PaintSurfaceManager.cs#L194) — 모든 클라이언트가 같은 명령으로 그리고, 서버만 이어서 GPU readback으로 칠해진 면적을 셉니다. 같은 표면에 읽기 요청이 진행 중이면 건너뜁니다.
+6. [PaintBrush.shader Pass 0](../Shaders/Paint/PaintBrush.shader#L49) — 메시를 UV 위치에 펼쳐 그리면서 브러시 중심과의 월드 거리로 칠합니다.
 
 ---
 
