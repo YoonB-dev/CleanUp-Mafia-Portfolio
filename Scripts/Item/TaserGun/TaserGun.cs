@@ -58,39 +58,37 @@ public class TaserGun : NetworkBehaviour, IUsableItem
 
         if (context.performed)
         {
-            Fire(playerCamera);
+            Fire();
         }
     }
 
-    private void Fire(Camera playerCamera)
+    private void Fire()
     {
         if (Time.time < _nextFireTime) return;
         if (_currentAmmo.Value <= 0) return;
 
-        if (playerCamera == null)
-        {
-            Debug.LogWarning("[TaserGun] PlayerCamera가 전달되지 않았습니다.");
-            return;
-        }
-
-        // 해당 클라이언트 플레이어 전용 카메라 기준 화면 중앙(0.5, 0.5) 레이 계산
-        Ray ray = playerCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
-
-        Vector3 spawnPos = ray.origin + ray.direction * spawnForwardOffset;
-        Vector3 shootDirection = ray.direction;
-
         _nextFireTime = Time.time + fireRate;
 
-        // 계산된 화면 중앙 스폰 위치와 방향을 서버로 전송
-        RequestFireServerRpc(spawnPos, shootDirection);
+        // 발사 위치와 방향은 서버가 든 사람의 시점으로 정하므로 요청만 보낸다
+        RequestFireServerRpc();
     }
 
     [ServerRpc]
-    private void RequestFireServerRpc(Vector3 spawnPos, Vector3 shootDirection, ServerRpcParams rpcParams = default)
+    private void RequestFireServerRpc(ServerRpcParams rpcParams = default)
     {
         if (!IsServer) return;
 
         if (_currentAmmo.Value <= 0 || !_thisPickupItem.IsHeld) return;
+
+        // RPC를 보낸 클라이언트가 이 총을 든 사람인지 확인하고, 그 사람의 시점(서버에 동기화된 카메라)에서 발사한다
+        var holder = _thisPickupItem.Holder;
+        if (holder == null || holder.OwnerClientId != rpcParams.Receive.SenderClientId) return;
+        if (holder.PlayerCamera == null) return;
+
+        Ray ray = holder.PlayerCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
+        Vector3 shootDirection = ray.direction;
+        Vector3 spawnPos = ray.origin + shootDirection * spawnForwardOffset;
+
         // 1. 프리팹 및 총알 수량 기본 검증
         if (bulletPrefab == null)
         {

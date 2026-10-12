@@ -27,6 +27,7 @@ public class PlayerInteraction : NetworkBehaviour
     private float _dropKeyPressTime; // 키를 누르기 시작한 시간
     private bool _isChargingThrow = false;
     private float _currentThrowGauge = 0f; // 0 ~ 1 사이의 UI용 게이지 값
+    private float _serverThrowChargeStartTime = float.NegativeInfinity; // [서버] 충전 시작 시각. 던지는 힘은 이 시각부터 잰다
     public float CurrentThrowGauge => _currentThrowGauge; // UI에서 접근할 프로퍼티
 
     [Header("Throw Rotation Settings")]
@@ -198,6 +199,7 @@ public class PlayerInteraction : NetworkBehaviour
             _dropKeyPressTime = Time.time;
             _isChargingThrow = true;
             _currentThrowGauge = 0f;
+            StartThrowChargeServerRpc();
         }
         else if (context.canceled)
         {
@@ -205,14 +207,9 @@ public class PlayerInteraction : NetworkBehaviour
             if (!_isChargingThrow) return;
 
             _isChargingThrow = false;
-            float holdDuration = Time.time - _dropKeyPressTime;
 
-            if (playerCamera != null)
-            {
-                Vector3 lookDirection = playerCamera.transform.forward;
-                // 클라이언트는 조준 방향과 "누르고 있던 시간"만 전달하고 처리는 서버에 전임합니다.
-                RequestDropOrThrowServerRpc(lookDirection, holdDuration);
-            }
+            // 클라이언트는 "뗐다"만 알린다. 누른 시간과 던지는 방향은 서버가 정한다
+            RequestDropOrThrowServerRpc();
 
             // 로컬 수치 초기화
             _currentThrowGauge = 0f;
@@ -565,13 +562,30 @@ public class PlayerInteraction : NetworkBehaviour
     #region [아이템 던지기 관련 로직]
 
     [ServerRpc]
-    private void RequestDropOrThrowServerRpc(Vector3 direction, float holdDuration)
+    private void StartThrowChargeServerRpc()
+    {
+        if (!_gate.CanDo(PlayerAction.DropItem)) return;
+        if (GetCurrentHeldItem() == null) return;
+
+        _serverThrowChargeStartTime = Time.time;
+    }
+
+    [ServerRpc]
+    private void RequestDropOrThrowServerRpc()
     {
         if (!IsServer) return;
+
+        // 누른 시간은 서버가 받은 누름·뗌 요청 사이의 시간으로 잰다. 누름 요청이 거부됐으면 힘 없이 내려놓는다
+        float holdDuration = float.IsNegativeInfinity(_serverThrowChargeStartTime) ? 0f : Time.time - _serverThrowChargeStartTime;
+        _serverThrowChargeStartTime = float.NegativeInfinity;
+
         if (!_gate.CanDo(PlayerAction.DropItem)) return;
 
         PickupItem currentHeldItem = GetCurrentHeldItem();
         if (currentHeldItem == null) return;
+
+        // 던지는 방향은 서버에 동기화된 이 플레이어의 시점
+        Vector3 direction = playerCamera != null ? playerCamera.transform.forward : transform.forward;
 
         // 1. 공통 처리: 먼저 아이템 인벤토리 관계 해제 및 가시성 회복
         currentHeldItem.SetVisibility(true);
