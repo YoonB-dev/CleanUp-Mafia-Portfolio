@@ -221,7 +221,13 @@ public class PlayerMovement : NetworkBehaviour
     [ServerRpc]
     private void SubmitMoveServerRpc(Vector2 input)
     {
-        _serverMoveInput = input;
+        // 입력 길이가 그대로 속도 배율이 되므로 서버에서 1 이하로 자른다. 숫자가 아닌 값은 정지로 처리
+        if (float.IsNaN(input.x) || float.IsNaN(input.y) || float.IsInfinity(input.x) || float.IsInfinity(input.y))
+        {
+            input = Vector2.zero;
+        }
+
+        _serverMoveInput = Vector2.ClampMagnitude(input, 1f);
     }
 
     [ServerRpc]
