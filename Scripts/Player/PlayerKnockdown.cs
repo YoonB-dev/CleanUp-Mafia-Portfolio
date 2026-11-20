@@ -18,12 +18,24 @@ public class PlayerKnockdown : NetworkBehaviour
         NetworkVariableReadPermission.Everyone,
         NetworkVariableWritePermission.Server);
 
+    [Header("Sound")]
+    [Tooltip("쓰러진 동안(펀치에 맞음·돌진) 벽·땅에 부딪힐 때 나는 소리 (SO/Sound/SFX/DiveImpactSound)")]
+    [SerializeField] private SoundData impactSound;
+    [Tooltip("이보다 느리게 닿으면 소리를 내지 않는다 (m/s). 바닥을 구르며 스치는 소리까지 나지 않게")]
+    [SerializeField] private float minImpactSpeed = 3f;
+    [Tooltip("이 속도(m/s) 이상이면 가장 크게")]
+    [SerializeField] private float fullImpactSpeed = 9f;
+    [Tooltip("충돌음끼리 최소 간격 (초). 뼈 여러 개가 한꺼번에 닿아도 한 번만 나게")]
+    [SerializeField] private float impactSoundInterval = 0.35f;
+
     private RagdollDriver _driver;
+    private float _nextImpactSoundTime;  // [서버]
     private FirstPersonLook _firstPersonLook;
     private PlayerInteraction _playerInteraction;
     private PlayerGrab _playerGrab;
     private float _groundedSince;  // [서버] 연속 접지가 시작된 시각. 끊기면 무한대로 되돌린다
     private float _downStartTime;  // [서버] 쓰러진 시각(상한 판정용)
+    private bool _stayDown;        // [서버] 게임 종료 무대처럼 다시 일어나지 않게 할 때
 
     /// <summary>쓰러져 있는지</summary>
     public bool IsDown => _isDownNet.Value;
@@ -34,7 +46,27 @@ public class PlayerKnockdown : NetworkBehaviour
     /// <param name="driver">이 플레이어의 래그돌 드라이버</param>
     public void BindRagdoll(RagdollDriver driver)
     {
+        if (_driver != null) _driver.Impacted -= OnRagdollImpacted;
         _driver = driver;
+        if (_driver != null) _driver.Impacted += OnRagdollImpacted;
+    }
+
+    // [서버] 뼈마다 따로 오므로 한꺼번에 몰려온다. 일정 간격으로 한 번만, 세게 부딪힐수록 크게 낸다.
+    // 쓰러지는 순간 이미 닿아 있던 발밑 바닥은 빼려고 쓰러진 직후 잠깐은 무시한다
+    private void OnRagdollImpacted(Vector3 point, float speed)
+    {
+        if (!IsServer || !_isDownNet.Value || Time.time < _downStartTime + LANDING_GRACE) return;
+        if (speed < minImpactSpeed || Time.time < _nextImpactSoundTime) return;
+
+        _nextImpactSoundTime = Time.time + impactSoundInterval;
+        float volume = Mathf.Lerp(0.4f, 1f, Mathf.InverseLerp(minImpactSpeed, fullImpactSpeed, speed));
+        PlayImpactSoundClientRpc(point, volume);
+    }
+
+    [ClientRpc]
+    private void PlayImpactSoundClientRpc(Vector3 point, float volume)
+    {
+        if (impactSound != null && SoundManager.Instance != null) SoundManager.Instance.PlaySFXAt(impactSound, point, volume);
     }
 
     private void Awake()
@@ -53,6 +85,7 @@ public class PlayerKnockdown : NetworkBehaviour
     public override void OnNetworkDespawn()
     {
         _isDownNet.OnValueChanged -= OnDownChanged;
+        if (_driver != null) _driver.Impacted -= OnRagdollImpacted;
     }
 
     /// <summary>
@@ -61,13 +94,15 @@ public class PlayerKnockdown : NetworkBehaviour
     /// </summary>
     /// <param name="velocity">날아갈 속도 변화량 (m/s)</param>
     /// <param name="angularVelocity">날아가며 도는 각속도 (rad/s, 월드)</param>
-    public void ServerKnockdown(Vector3 velocity, Vector3 angularVelocity)
+    /// <param name="stayDown">true면 다시 일어나지 않는다 (게임 종료 연출용)</param>
+    public void ServerKnockdown(Vector3 velocity, Vector3 angularVelocity, bool stayDown = false)
     {
         if (!IsServer || _driver == null)
         {
             return;
         }
 
+        _stayDown |= stayDown;
         EnterDown(dropItem: true, diving: false);
         _driver.ApplyKnockbackVelocity(velocity);
         _driver.ApplyKnockbackSpin(angularVelocity);
@@ -110,6 +145,12 @@ public class PlayerKnockdown : NetworkBehaviour
             _playerGrab.ServerReleaseGrab();
         }
 
+        // 끌던 오브젝트도 놓는다 (피격으로 날아갈 때 오브젝트가 끌려오지 않게)
+        if (_playerInteraction != null)
+        {
+            _playerInteraction.ServerReleaseDrag();
+        }
+
         if (dropItem && _playerInteraction != null)
         {
             _playerInteraction.ServerDropHeldItem();
@@ -118,7 +159,7 @@ public class PlayerKnockdown : NetworkBehaviour
 
     private void Update()
     {
-        if (!IsServer || !_isDownNet.Value)
+        if (!IsServer || !_isDownNet.Value || _stayDown)
         {
             return;
         }

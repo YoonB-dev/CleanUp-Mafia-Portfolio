@@ -19,23 +19,27 @@ public class InventoryUIController : SceneSingleton<InventoryUIController>
     [Header("슬롯 아이템 아이콘 (비워두면 각 슬롯의 자식 'ItemImage'를 자동으로 찾음)")]
     [SerializeField] private Image[] slotItemImages = new Image[4];
 
-    [Header("슬롯 색상")]
-    [SerializeField] private Color selectedColor = Color.yellow;   // 현재 들고 있는 슬롯
-    [SerializeField] private Color normalColor = Color.white;      // 나머지 슬롯
+    [Header("슬롯 테두리 색상")]
+    [SerializeField] private Color selectedColor = new(0.91f, 0.784f, 0.29f);    // 현재 들고 있는 슬롯
+    [SerializeField] private Color normalColor = new(1f, 1f, 1f, 0.18f);         // 나머지 슬롯
 
     [Header("테이저건 탄약 표시 (비워두면 'BulletCount' 오브젝트와 그 자식 텍스트를 자동으로 찾음)")]
     [SerializeField] private GameObject bulletCountRoot;
     [SerializeField] private TMP_Text bulletCountText;
 
-    [Header("마피아 쓰레기 생성 스킬 아이콘 (Filled 타입, 비워두면 'TrashSkill' 오브젝트를 자동으로 찾음)")]
+    [Header("마피아 쓰레기 생성 스킬 아이콘 (비워두면 'TrashSkill' 오브젝트를 자동으로 찾음)")]
     [SerializeField] private Image trashSkillImage;
+    [Tooltip("남은 쿨타임만큼 아이콘을 덮는 Radial Filled 이미지. 비워두면 TrashSkill 아래 'Cooldown'을 찾고, 그것도 없으면 TrashSkill 자체를 채운다")]
+    [SerializeField] private Image trashSkillCooldownImage;
 
     private const string ItemImageChildName = "ItemImage";
     private const string BulletCountName = "BulletCount";
     private const string TrashSkillName = "TrashSkill";
+    private const string TrashSkillCooldownName = "Cooldown";
 
     private PlayerInventory _targetInventory;
     private Image[] _slotBackgrounds;
+    private Outline[] _slotOutlines;
     private TaserGun _watchedTaser; // 현재 탄약 표시를 위해 구독 중인 테이저건
 
     protected override void Awake()
@@ -49,6 +53,11 @@ public class InventoryUIController : SceneSingleton<InventoryUIController>
         {
             Transform found = FindChildRecursive(transform, TrashSkillName);
             if (found != null) trashSkillImage = found.GetComponent<Image>();
+        }
+        if (trashSkillCooldownImage == null && trashSkillImage != null)
+        {
+            Transform found = trashSkillImage.transform.Find(TrashSkillCooldownName);
+            if (found != null) trashSkillCooldownImage = found.GetComponent<Image>();
         }
         SetTrashSkillCooldown(0f);
     }
@@ -90,13 +99,18 @@ public class InventoryUIController : SceneSingleton<InventoryUIController>
     }
 
     /// <summary>
-    /// 쓰레기 생성 쿨타임 표시. remainingRatio = 남은 쿨타임 / 전체 쿨타임 (0이면 사용 가능 → 가득 참)
+    /// 쓰레기 생성 쿨타임 표시. remainingRatio = 남은 쿨타임 / 전체 쿨타임 (0이면 사용 가능 → 덮개 없음)
     /// </summary>
     public void SetTrashSkillCooldown(float remainingRatio)
     {
-        if (trashSkillImage != null)
+        float remaining = Mathf.Clamp01(remainingRatio);
+        if (trashSkillCooldownImage != null)
         {
-            trashSkillImage.fillAmount = 1f - Mathf.Clamp01(remainingRatio);
+            trashSkillCooldownImage.fillAmount = remaining;
+        }
+        else if (trashSkillImage != null)
+        {
+            trashSkillImage.fillAmount = 1f - remaining;
         }
     }
 
@@ -112,11 +126,11 @@ public class InventoryUIController : SceneSingleton<InventoryUIController>
         SetSlotItem(2, _targetInventory.Slot2.Value);
         SetSlotItem(3, _targetInventory.Slot3.Value);
 
-        for (int slot = 1; slot <= _slotBackgrounds.Length; slot++)
+        for (int slot = 1; slot <= _slotOutlines.Length; slot++)
         {
-            Image background = _slotBackgrounds[slot - 1];
-            if (background == null) continue;
-            background.color = (currentActive == slot) ? selectedColor : normalColor;
+            Outline outline = _slotOutlines[slot - 1];
+            if (outline == null) continue;
+            outline.effectColor = (currentActive == slot) ? selectedColor : normalColor;
         }
         // 4번(마피아 페인트 총)은 항상 아이템이 있으므로 아이콘은 프리팹에 설정된 그대로 둠
 
@@ -216,6 +230,7 @@ public class InventoryUIController : SceneSingleton<InventoryUIController>
     private void CacheSlotImages()
     {
         _slotBackgrounds = new[] { slot1Image, slot2Image, slot3Image, slot4Image };
+        _slotOutlines = System.Array.ConvertAll(_slotBackgrounds, background => background != null ? background.GetComponent<Outline>() : null);
 
         if (slotItemImages == null || slotItemImages.Length != _slotBackgrounds.Length)
         {

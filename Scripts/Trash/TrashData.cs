@@ -15,4 +15,6 @@ public class TrashData : ItemData // 표시 이름(displayName, 기존 trashName
     public GameObject cleanVFX;    // 청소 완료 파티클 프리팹
     public AudioClip cleanSFX;     // 청소 완료 사운드
     public AudioClip pickupSFX;   // 쓰레기 줍는 사운드
+    [Tooltip("파쇄기에 들어갔을 때 튀는 파편 종류")]
+    public ShredderWasteKind shredKind = ShredderWasteKind.Plastic;
 }

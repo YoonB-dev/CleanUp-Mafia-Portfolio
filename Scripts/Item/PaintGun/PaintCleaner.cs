@@ -19,21 +19,54 @@ public class PaintCleaner : NetworkBehaviour, IUsableItem
     // 서버 사거리 검증 여유. 요청이 도착하는 동안 플레이어가 움직인 거리만큼 봐준다
     private const float RANGE_TOLERANCE = 1f;
 
+    [Header("VFX")]
+    [Tooltip("청소 지점에 젖은 자국을 남기는 이펙트 프리팹 (Broom_Clean_FX_Final)")]
+    [SerializeField] private BroomWetTrail wetTrailPrefab;
+    [Tooltip("이 시간(초) 동안 청소 지점이 들어오지 않으면 자국 접촉을 끊는다. 네트워크 지연보다 넉넉해야 자국이 중간에 끊기지 않는다")]
+    [SerializeField] private float wetContactTimeout = 0.3f;
+
+    [Header("Sound")]
+    [Tooltip("닦는 동안 반복 재생할 소리 (SO/Sound/SFX/Item/MopSound)")]
+    [SerializeField] private SoundData mopSound;
+    [Tooltip("닦는 소리가 켜지고 꺼지는 페이드 시간(초)")]
+    [SerializeField] private float mopSoundFade = 0.12f;
+
     private PickupItem _pickupItem;
     private PlayerInteraction _localPlayer; // 현재 나를 들고 있는 주인
     private Camera _playerCamera;
+    private BroomWetTrail _wetTrail;
+    private AudioSource _mopAudio;
 
     private float _nextCleanTime;
+    private float _lastWetContactTime = float.NegativeInfinity;
     private bool _isCleaning;
+
+    /// <summary>지금 실제로 닦이고 있는지 (청소 지점이 계속 들어오는 중). 모든 클라이언트에서 같다</summary>
+    public bool IsCleaningContact => Time.time - _lastWetContactTime <= wetContactTimeout;
+    /// <summary>마지막으로 닦인 지점 (월드)</summary>
+    public Vector3 LastCleanPoint { get; private set; }
+    /// <summary>마지막으로 닦인 면의 노멀</summary>
+    public Vector3 LastCleanNormal { get; private set; } = Vector3.up;
 
     private void Awake()
     {
         _pickupItem = GetComponent<PickupItem>();
+
+        // 자국은 월드 공간에 남으므로 위치는 상관없고, 아이템과 수명만 같이 가도록 자식으로 둔다
+        if (wetTrailPrefab != null) _wetTrail = Instantiate(wetTrailPrefab, transform);
+
+        // 닦는 소리는 실제로 닦이는 지점에서 나도록 RPC마다 위치를 옮긴다
+        if (mopSound != null && SoundManager.Instance != null) _mopAudio = SoundManager.Instance.CreateLoopSource(mopSound, transform);
     }
 
     private void Update()
     {
         if (!IsSpawned) return;
+
+        // 청소 지점이 끊기면 자국 접촉 종료 (오너가 아닌 클라이언트도 처리해야 하므로 오너 체크보다 먼저)
+        bool cleaningContact = IsCleaningContact;
+        if (_wetTrail != null && !cleaningContact) _wetTrail.EndContact();
+        UpdateMopSound(cleaningContact);
 
         // 1. 아무도 들고 있지 않으면 청소 로직 정지 (IsHeld는 PickupItem이 서버 권위로 관리)
         if (!_pickupItem.IsHeld)
@@ -87,11 +120,11 @@ public class PaintCleaner : NetworkBehaviour, IUsableItem
         if (paintable == null) return;
 
         // 브러시는 월드 좌표 기준으로 그리므로 맞은 지점(월드)을 보낸다. 반경은 서버가 정한다
-        RequestCleanServerRpc(paintable.SurfaceId, hit.point);
+        RequestCleanServerRpc(paintable.SurfaceId, hit.point, hit.normal);
     }
 
     [ServerRpc]
-    private void RequestCleanServerRpc(int surfaceId, Vector3 point, ServerRpcParams rpcParams = default)
+    private void RequestCleanServerRpc(int surfaceId, Vector3 point, Vector3 normal, ServerRpcParams rpcParams = default)
     {
         if (!IsServer) return;
 
@@ -109,12 +142,39 @@ public class PaintCleaner : NetworkBehaviour, IUsableItem
         if (Vector3.Distance(origin, point) > cleanRange + RANGE_TOLERANCE) return;
 
         // 반경은 클라이언트 값을 받지 않고 서버 설정값을 쓴다
-        ApplyCleanClientRpc(surfaceId, point, brushRadius);
+        ApplyCleanClientRpc(surfaceId, point, normal, brushRadius);
     }
 
     [ClientRpc]
-    private void ApplyCleanClientRpc(int surfaceId, Vector3 point, float radius)
+    private void ApplyCleanClientRpc(int surfaceId, Vector3 point, Vector3 normal, float radius)
     {
         PaintSurfaceManager.Instance.DrawAt(surfaceId, point, radius, isPaint: false);
+
+        // 실제로 지워진 지점에 젖은 자국을 남긴다. 모든 클라이언트가 같은 지점을 받으므로 따로 동기화하지 않는다
+        _lastWetContactTime = Time.time;
+        LastCleanPoint = point;
+        LastCleanNormal = normal;
+        if (_wetTrail != null) _wetTrail.SetContact(point, normal);
+        if (_mopAudio != null) _mopAudio.transform.position = point;
+    }
+
+    /// <summary>
+    /// 젖은 자국과 같은 조건(청소 지점이 계속 들어오는 동안)으로 닦는 소리를 켜고 끈다. 뚝 끊기지 않게 짧게 페이드한다
+    /// </summary>
+    private void UpdateMopSound(bool cleaning)
+    {
+        if (_mopAudio == null || !_mopAudio.isActiveAndEnabled) return;
+
+        if (cleaning && !_mopAudio.isPlaying)
+        {
+            _mopAudio.pitch = mopSound.GetRandomPitch();
+            _mopAudio.Play();
+        }
+
+        float target = cleaning ? mopSound.Volume : 0f;
+        float step = mopSound.Volume * Time.deltaTime / Mathf.Max(0.01f, mopSoundFade);
+        _mopAudio.volume = Mathf.MoveTowards(_mopAudio.volume, target, step);
+
+        if (!cleaning && _mopAudio.volume <= 0f && _mopAudio.isPlaying) _mopAudio.Stop();
     }
 }

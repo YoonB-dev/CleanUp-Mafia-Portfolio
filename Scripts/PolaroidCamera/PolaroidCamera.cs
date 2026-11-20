@@ -29,6 +29,16 @@ public class PolaroidCamera : NetworkBehaviour, ICaptureTool, IPickupListener
     // 남은 수 카운트
     [SerializeField] private TextMeshProUGUI remainingPhotosText;
 
+    [Header("VFX")]
+    [Tooltip("사진을 찍을 때 플래시 이펙트 (VFX/Polaroid/Prefabs/Polaroid_Shutter_FX)")]
+    [SerializeField] private PolaroidShutterFX shutterEffectPrefab;
+    [Tooltip("이펙트를 붙일 위치. 카메라 모델과 같은 위치/회전/크기여야 플래시 창과 렌즈 위치가 맞는다")]
+    [SerializeField] private Transform shutterEffectAnchor;
+
+    [Header("Sound")]
+    [Tooltip("셔터 소리 (SO/Sound/SFX/Item/CameraShutterSound)")]
+    [SerializeField] private SoundData shutterSound;
+
     // ===== 설정값 =====
     private int captureResolution = 512;
     [Range(1, 100)]
@@ -53,10 +63,16 @@ public class PolaroidCamera : NetworkBehaviour, ICaptureTool, IPickupListener
     private PickupItem _pickupItem;
     private ZoomableItem _zoomableItem;
     private Material _viewfinderMaterial;
+    private PolaroidShutterFX _shutterEffect;
     private void Awake()
     {
         _pickupItem = GetComponent<PickupItem>();
         _zoomableItem = GetComponent<ZoomableItem>();
+
+        if (shutterEffectPrefab != null)
+        {
+            _shutterEffect = Instantiate(shutterEffectPrefab, shutterEffectAnchor != null ? shutterEffectAnchor : transform);
+        }
 
         // RT 에셋은 모든 카메라가 공유하므로, 설정만 복사해 이 카메라 전용 RT를 만든다
         if (viewfinderRT != null)
@@ -171,6 +187,9 @@ public class PolaroidCamera : NetworkBehaviour, ICaptureTool, IPickupListener
         Vector3 ejectVelocity = (photoEjectPoint != null ? photoEjectPoint.forward : transform.forward) * ejectForce
                                  + Vector3.up * 0.5f;
 
+        // 찍은 본인은 지연 없이 바로 플래시·셔터음 (다른 클라이언트는 서버가 사진을 받아들인 뒤 RPC로)
+        PlayShutterFeedback();
+
         RequestSpawnPhotoServerRpc(spawnPos, spawnRot, ejectVelocity, jpgBytes);
     }
 
@@ -228,6 +247,22 @@ public class PolaroidCamera : NetworkBehaviour, ICaptureTool, IPickupListener
 
         Photo photo = photoObj.GetComponent<Photo>();
         photo.ApplyPhotoTextureClientRpc(jpgBytes);
+
+        PlayShutterClientRpc();
+    }
+
+    [ClientRpc]
+    private void PlayShutterClientRpc()
+    {
+        // 찍은 본인은 TakePhoto에서 이미 재생했다
+        if (IsOwner) return;
+        PlayShutterFeedback();
+    }
+
+    private void PlayShutterFeedback()
+    {
+        if (_shutterEffect != null) _shutterEffect.PlayShutter();
+        if (shutterSound != null && SoundManager.Instance != null) SoundManager.Instance.PlaySFXAt(shutterSound, transform.position);
     }
 
     private void UpdateRemainingPhotosUI()

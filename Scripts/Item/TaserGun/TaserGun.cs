@@ -11,6 +11,16 @@ public class TaserGun : NetworkBehaviour, IUsableItem
     [SerializeField] private int maxAmmo = 3;
     [SerializeField] private float spawnForwardOffset = 0.6f; // 카메라 앞쪽 스폰 거리
 
+    [Header("VFX")]
+    [Tooltip("발사 이펙트가 나올 총구 위치")]
+    [SerializeField] private Transform nozzlePoint;
+    [Tooltip("발사 시 총구에서 터지는 이펙트 (예: Prefab/VFX/TaserMuzzle)")]
+    [SerializeField] private GameObject muzzleEffectPrefab;
+    [Tooltip("이펙트를 정리할 때까지의 시간(초)")]
+    [SerializeField] private float muzzleEffectLifetime = 1f;
+    [Tooltip("발사 소리 (SO/Sound/SFX/Item/TaserFireSound)")]
+    [SerializeField] private SoundData fireSound;
+
     private readonly NetworkVariable<int> _currentAmmo = new(
         3,
         NetworkVariableReadPermission.Everyone,
@@ -125,6 +135,22 @@ public class TaserGun : NetworkBehaviour, IUsableItem
                 bullet.Init(NetworkObject.NetworkObjectId);
             }
         }
-        bulletNetObj.Spawn();
+        bulletNetObj.Spawn(destroyWithScene: true);
+
+        // 실제로 발사된 경우에만 모든 클라이언트에 발사 이펙트를 띄운다
+        PlayMuzzleEffectClientRpc(shootDirection);
+    }
+
+    [ClientRpc]
+    private void PlayMuzzleEffectClientRpc(Vector3 shootDirection)
+    {
+        if (fireSound != null && SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFXAt(fireSound, nozzlePoint != null ? nozzlePoint.position : transform.position);
+
+        if (muzzleEffectPrefab == null || nozzlePoint == null) return;
+
+        // 총구 위치는 각 클라이언트에 보이는 총 기준, 방향은 실제 발사 방향
+        GameObject effect = Instantiate(muzzleEffectPrefab, nozzlePoint.position, Quaternion.LookRotation(shootDirection));
+        Destroy(effect, muzzleEffectLifetime);
     }
 }

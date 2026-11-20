@@ -20,6 +20,7 @@ public class PlayerMovement : NetworkBehaviour
     [SerializeField] private LayerMask groundLayer;
     private Vector2 _serverMoveInput;
     public Vector3 Velocity => characterController.velocity;
+    public bool IsGrounded => Time.time - _lastGroundedTime <= COYOTE_TIME;
 
     /// <summary>캡슐 바닥과 실제 지면 사이의 틈(월드 기준). 캡슐은 이만큼 떠서 선다</summary>
     public float SkinWidth => characterController.skinWidth * transform.lossyScale.y;
@@ -50,6 +51,7 @@ public class PlayerMovement : NetworkBehaviour
     private DraggableObject _currentDraggingObject;
     // 다른 플레이어가 같은 오브젝트를 끌고 있는 경우와 구분하기 위해 끄는 사람이 나인지까지 확인한다
     public bool IsDraggingObject => _currentDraggingObject != null && _currentDraggingObject.GrabberPlayerId == NetworkObjectId;
+    public DraggableObject CurrentDraggingObject => IsDraggingObject ? _currentDraggingObject : null;
     private void Awake()
     {
         if (characterController == null)
@@ -205,6 +207,20 @@ public class PlayerMovement : NetworkBehaviour
         SubmitMoveServerRpc(Vector2.zero);
     }
 
+    // 막혀 있다 풀릴 때 누르고 있던 이동 키를 다시 읽는다. 안 그러면 키를 뗐다 다시 눌러야 걷는다
+    public void ResyncMoveInput()
+    {
+        if (!IsOwner || !TryGetComponent(out PlayerInput playerInput) || playerInput.actions == null)
+        {
+            return;
+        }
+
+        InputAction move = playerInput.actions.FindAction("Move");
+        Vector2 input = move != null && _gate.CanDo(PlayerAction.Move) ? move.ReadValue<Vector2>() : Vector2.zero;
+        _serverMoveInput = input;
+        SubmitMoveServerRpc(input);
+    }
+
     public void OnJump(InputAction.CallbackContext context)
     {
         if (!IsOwner)
@@ -246,6 +262,31 @@ public class PlayerMovement : NetworkBehaviour
         verticalVelocity = Mathf.Sqrt(jumpForce * -2f * gravity);
         _jumpRequestedTime = float.NegativeInfinity;
         _lastGroundedTime = float.NegativeInfinity;
+    }
+
+    /// <summary>
+    /// [서버 전용] 래그돌과 시점까지 함께 순간이동시킨다.
+    /// </summary>
+    public void ServerTeleport(Vector3 position, float yaw)
+    {
+        if (!IsServer) return;
+
+        Vector3 from = transform.position;
+        Quaternion turn = Quaternion.Euler(0f, yaw - transform.eulerAngles.y, 0f);
+
+        characterController.enabled = false;
+        transform.SetPositionAndRotation(position, Quaternion.Euler(0f, yaw, 0f));
+        characterController.enabled = true;
+        verticalVelocity = 0f;
+
+        if (TryGetComponent(out NetworkTransform networkTransform))
+        {
+            networkTransform.Teleport(position, transform.rotation, transform.localScale);
+        }
+
+        if (_ownedRagdoll != null) _ownedRagdoll.GetComponent<RagdollDriver>().Teleport(from, position, turn);
+
+        GetComponent<FirstPersonLook>().ServerFace(yaw);
     }
 
     #region 감전 상태 관련 메서드 (테이저건)

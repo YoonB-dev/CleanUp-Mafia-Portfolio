@@ -253,10 +253,24 @@ public class RagdollPoser : MonoBehaviour
     /// PickupItem 등 외부에서 이 트랜스폼에 아이템을 SetParent하면 됨.
     /// 손 뼈를 못 찾았으면 null.
     /// </summary>
+    [Header("들고 있는 물건 벽 통과 막기")]
+    [Tooltip("들고 있는 물건이 파고들지 못하는 레이어 (벽, 바닥, 계단, 가구 등). 플레이어·아이템 레이어는 넣지 말 것")]
+    [SerializeField] private LayerMask _carryBlockMask = (1 << 0) | (1 << 6) | (1 << 8) | (1 << 11) | (1 << 13); // Default, Ground, Wall, Floor, Stair
+    [Tooltip("벽을 찾을 때 쓰는 구의 반경(m). 몸 중심에서 벽까지보다 작아야 벽에 붙어 서도 벽을 놓치지 않는다")]
+    [SerializeField] private float _carryBlockRadius = 0.2f;
+    [Tooltip("구 밖으로 더 튀어나온 물건 크기만큼 벽에서 더 띄우는 거리(m)")]
+    [SerializeField] private float _carryBlockPadding = 0.15f;
+    private readonly RaycastHit[] _carryBlockHits = new RaycastHit[16];
+
     [Tooltip("양손을 기본 _carryYaw 각도로 들었을 때 두 손 사이의 기준 너비(m). 물건 너비가 이보다 작으면 손을 모으고, 크면 벌립니다.")]
     [SerializeField]
     private float _defaultCarryWidth = 0.4f;
     public Transform CarryAnchor => _carryAnchor;
+
+    /// <summary>왼손·오른손 뼈. 아이템이 앵커 대신 실제 손 위치를 따라갈 때 쓴다 (대걸레 자루 등). 못 찾았으면 null</summary>
+    public Transform LeftHand => _leftHandTransform;
+    public Transform RightHand => _rightHandTransform;
+
     private void Awake()
     {
         _driver = GetComponent<RagdollDriver>();
@@ -546,7 +560,7 @@ public class RagdollPoser : MonoBehaviour
         }
 
         float deltaTime = Time.fixedDeltaTime;
-        _animationRig.Evaluate(_driver.LocalVelocity, _strideLength, _strideScale, deltaTime);
+        _animationRig.Evaluate(_driver.IsGrounded ? _driver.LocalVelocity : Vector3.zero, _strideLength, _strideScale, deltaTime);
         _driver.LegReachScale = _animationRig.LegReachRatio;
 
         _reachWeight = Mathf.MoveTowards(
@@ -638,9 +652,43 @@ public class RagdollPoser : MonoBehaviour
         // 회전값(anchorRotation)을 적용하여 '앞쪽/위쪽' 오프셋이 더해진 월드 좌표 계산
         Vector3 finalPosition = midpoint + (anchorRotation * _activeCarryAnchorOffset);
 
+        // 손에 든 물건은 콜라이더를 끄고 앵커에 붙어 다니므로, 벽에 붙어 서면 그대로 벽을 뚫고 나간다. 벽 앞까지만 내민다
+        if (_carryAnchor.childCount > 0) finalPosition = KeepCarryOutOfWalls(finalPosition);
+
         // 오프셋이 반영된 위치로 매 프레임 갱신
         _carryAnchor.SetPositionAndRotation(finalPosition, anchorRotation);
 
+    }
+
+    /// <summary>
+    /// 몸 중심(같은 높이)에서 앵커 자리까지 구를 밀어 보고, 벽·바닥 등에 막히면 그 앞까지만 내민다.
+    /// 자기 몸(래그돌 포함)과 굴러다니는 물건은 무시한다
+    /// </summary>
+    private Vector3 KeepCarryOutOfWalls(Vector3 target)
+    {
+        Transform body = _driver != null && _driver.PlayerRoot != null ? _driver.PlayerRoot : transform;
+        Vector3 origin = new Vector3(body.position.x, target.y, body.position.z);
+        Vector3 toTarget = target - origin;
+        float distance = toTarget.magnitude;
+        if (distance < 1e-3f) return target;
+
+        Vector3 direction = toTarget / distance;
+        int count = Physics.SphereCastNonAlloc(origin, _carryBlockRadius, direction, _carryBlockHits,
+            distance + _carryBlockPadding, _carryBlockMask, QueryTriggerInteraction.Ignore);
+
+        float nearest = float.PositiveInfinity;
+        for (int i = 0; i < count; i++)
+        {
+            RaycastHit hit = _carryBlockHits[i];
+            if (hit.distance <= 0f || hit.distance >= nearest) continue; // 시작부터 겹친 것(내 몸 등)은 위치를 알 수 없어 건너뛴다
+            if (hit.rigidbody != null && !hit.rigidbody.isKinematic) continue; // 바닥에 굴러다니는 물건
+            if (hit.collider.transform.IsChildOf(body) || hit.collider.transform.IsChildOf(transform)) continue;
+            if (hit.collider.GetComponentInParent<RagdollDriver>() != null) continue; // 래그돌 (나·다른 사람)
+            nearest = hit.distance;
+        }
+
+        if (float.IsPositiveInfinity(nearest)) return target;
+        return origin + direction * Mathf.Min(distance, Mathf.Max(0f, nearest - _carryBlockPadding));
     }
 
     // 오른팔 뻗기 목표 오프셋. 팔 장축을 몸통 정면 방향에 정렬하고 롤은 자동 고정, yaw/pitch는 정면 반구로 클램프

@@ -20,6 +20,11 @@ public class RoomSettings : NetworkBehaviour
     private const float MIN_CONTAMINATION_MULTIPLIER = 0.5f;
     private const float MAX_CONTAMINATION_MULTIPLIER = 3f;
     private const float CONTAMINATION_MULTIPLIER_STEP = 0.25f; // x0.25 단위로 증가/감소
+    private const float MIN_AMOUNT_MULTIPLIER = 0.25f;
+    private const float MAX_AMOUNT_MULTIPLIER = 2f;
+    private const float MIN_TOOL_AMOUNT_MULTIPLIER = 1f; // 도구는 종류마다 인원수만큼은 꼭 깔리므로 1배 아래로는 못 내린다
+    private const float MAX_TOOL_AMOUNT_MULTIPLIER = 3f;
+    private const float AMOUNT_MULTIPLIER_STEP = 0.25f; // x0.25 단위로 증가/감소
 
     public NetworkVariable<int> PlayerCount = new(MIN_PLAYER_COUNT);
     public NetworkVariable<int> MafiaCount = new(MIN_MAFIA_COUNT);
@@ -29,6 +34,15 @@ public class RoomSettings : NetworkBehaviour
     public NetworkVariable<float> TrashContaminationMultiplier = new(1f); // 버리는 쓰레기
     public NetworkVariable<float> BoxContaminationMultiplier = new(1f);   // 정리 안 된 상자
     public NetworkVariable<float> PaintContaminationMultiplier = new(1f); // 페인트
+
+    // ============ 시작 오염량 세팅 =========== 배율 (1.0 = 맵에 정해진 기본 양)
+    public NetworkVariable<float> TrashAmountMultiplier = new(1f); // 게임 시작 시 맵에 깔리는 쓰레기 양
+    public NetworkVariable<float> BoxAmountMultiplier = new(1f);   // 게임 시작 시 맵에 깔리는 배치 가능한 박스 양
+    public NetworkVariable<float> PaintAmountMultiplier = new(1f); // 게임 시작 시 맵에 묻어 있는 페인트 양
+    public NetworkVariable<float> ToolAmountMultiplier = new(1f);  // 게임 시작 시 맵에 깔리는 도구 양 (1.0 = 종류마다 인원수만큼)
+
+    // 작업 현장(맵) 씬 이름. 비어 있으면 무작위 (MapCatalog.Resolve)
+    public NetworkVariable<FixedString64Bytes> MapSceneName = new("");
 
     // 호스트만 아는 값이라 참가자도 친구를 부를 수 있게 공유한다
     public NetworkVariable<FixedString64Bytes> RoomCode = new("");
@@ -57,6 +71,9 @@ public class RoomSettings : NetworkBehaviour
 
             // 호스트(서버 본인) 최초 등록
             RegisterPlayer(NetworkManager.ServerClientId, $"Player {NetworkManager.ServerClientId}");
+
+            // 방장을 넘겨받아 방을 다시 연 경우 이전 방 설정을 이어받는다
+            if (HostMigration.Instance != null) HostMigration.Instance.ApplyInheritedSettings(this);
         }
         PlayerCount.OnValueChanged += OnVariableChanged;
         MafiaCount.OnValueChanged += OnVariableChanged;
@@ -64,7 +81,12 @@ public class RoomSettings : NetworkBehaviour
         TrashContaminationMultiplier.OnValueChanged += OnMultiplierChanged;
         BoxContaminationMultiplier.OnValueChanged += OnMultiplierChanged;
         PaintContaminationMultiplier.OnValueChanged += OnMultiplierChanged;
-        RoomCode.OnValueChanged += OnRoomCodeChanged;
+        TrashAmountMultiplier.OnValueChanged += OnMultiplierChanged;
+        BoxAmountMultiplier.OnValueChanged += OnMultiplierChanged;
+        PaintAmountMultiplier.OnValueChanged += OnMultiplierChanged;
+        ToolAmountMultiplier.OnValueChanged += OnMultiplierChanged;
+        RoomCode.OnValueChanged += OnTextChanged;
+        MapSceneName.OnValueChanged += OnTextChanged;
 
         // 참여자 목록(등록/해제/Ready 변경 등)이 바뀔 때마다 UI 갱신
         AllPlayers.OnListChanged += OnAllPlayersChanged;
@@ -86,7 +108,12 @@ public class RoomSettings : NetworkBehaviour
         TrashContaminationMultiplier.OnValueChanged -= OnMultiplierChanged;
         BoxContaminationMultiplier.OnValueChanged -= OnMultiplierChanged;
         PaintContaminationMultiplier.OnValueChanged -= OnMultiplierChanged;
-        RoomCode.OnValueChanged -= OnRoomCodeChanged;
+        TrashAmountMultiplier.OnValueChanged -= OnMultiplierChanged;
+        BoxAmountMultiplier.OnValueChanged -= OnMultiplierChanged;
+        PaintAmountMultiplier.OnValueChanged -= OnMultiplierChanged;
+        ToolAmountMultiplier.OnValueChanged -= OnMultiplierChanged;
+        RoomCode.OnValueChanged -= OnTextChanged;
+        MapSceneName.OnValueChanged -= OnTextChanged;
         AllPlayers.OnListChanged -= OnAllPlayersChanged;
     }
 
@@ -121,7 +148,7 @@ public class RoomSettings : NetworkBehaviour
         RoomUIController.Instance?.Refresh();
     }
 
-    private void OnRoomCodeChanged(FixedString64Bytes previousValue, FixedString64Bytes newValue)
+    private void OnTextChanged(FixedString64Bytes previousValue, FixedString64Bytes newValue)
     {
         RoomUIController.Instance?.Refresh();
     }
@@ -246,6 +273,55 @@ public class RoomSettings : NetworkBehaviour
         PlayerCount.Value = newCount;
     }
 
+    /// <summary>방장이 바뀌어도 이어 쓸 방 설정 값</summary>
+    public struct Snapshot
+    {
+        public int PlayerCount, MafiaCount, PlayTime;
+        public float TrashContamination, BoxContamination, PaintContamination;
+        public float TrashAmount, BoxAmount, PaintAmount, ToolAmount;
+        public FixedString64Bytes MapSceneName;
+    }
+
+    public Snapshot Capture() => new()
+    {
+        PlayerCount = PlayerCount.Value,
+        MafiaCount = MafiaCount.Value,
+        PlayTime = PlayTimeMinutes.Value,
+        TrashContamination = TrashContaminationMultiplier.Value,
+        BoxContamination = BoxContaminationMultiplier.Value,
+        PaintContamination = PaintContaminationMultiplier.Value,
+        TrashAmount = TrashAmountMultiplier.Value,
+        BoxAmount = BoxAmountMultiplier.Value,
+        PaintAmount = PaintAmountMultiplier.Value,
+        ToolAmount = ToolAmountMultiplier.Value,
+        MapSceneName = MapSceneName.Value,
+    };
+
+    /// <summary>[서버 전용] 저장해 둔 방 설정을 적용한다. 범위 검사는 각 setter가 한다</summary>
+    public void Apply(Snapshot snapshot)
+    {
+        if (!IsServer) return;
+
+        SetPlayerCount(snapshot.PlayerCount);
+        SetMafiaCount(snapshot.MafiaCount);
+        SetPlayTimeMinutes(snapshot.PlayTime);
+        SetTrashMultiplier(snapshot.TrashContamination);
+        SetBoxMultiplier(snapshot.BoxContamination);
+        SetPaintMultiplier(snapshot.PaintContamination);
+        SetTrashAmount(snapshot.TrashAmount);
+        SetBoxAmount(snapshot.BoxAmount);
+        SetPaintAmount(snapshot.PaintAmount);
+        SetToolAmount(snapshot.ToolAmount);
+        SetMap(snapshot.MapSceneName.ToString());
+    }
+
+    // ===== 작업 현장(맵). 빈 문자열이면 무작위 =====
+    public void SetMap(string sceneName)
+    {
+        if (!IsServer) return;
+        MapSceneName.Value = sceneName ?? string.Empty;
+    }
+
     // ===== 플레이어 수 직접 입력 =====
     public void SetPlayerCount(int value)
     {
@@ -336,13 +412,46 @@ public class RoomSettings : NetworkBehaviour
 
     private void SetMultiplier(NetworkVariable<float> multiplier, float value)
     {
+        SetSnappedValue(multiplier, value, MIN_CONTAMINATION_MULTIPLIER, MAX_CONTAMINATION_MULTIPLIER, CONTAMINATION_MULTIPLIER_STEP);
+    }
+
+    // ===== 시작 오염량 배율 =====
+    public void TrashAmountUp() => StepAmount(TrashAmountMultiplier, +1);
+    public void TrashAmountDown() => StepAmount(TrashAmountMultiplier, -1);
+    public void SetTrashAmount(float value) => SetAmount(TrashAmountMultiplier, value);
+
+    public void BoxAmountUp() => StepAmount(BoxAmountMultiplier, +1);
+    public void BoxAmountDown() => StepAmount(BoxAmountMultiplier, -1);
+    public void SetBoxAmount(float value) => SetAmount(BoxAmountMultiplier, value);
+
+    public void PaintAmountUp() => StepAmount(PaintAmountMultiplier, +1);
+    public void PaintAmountDown() => StepAmount(PaintAmountMultiplier, -1);
+    public void SetPaintAmount(float value) => SetAmount(PaintAmountMultiplier, value);
+
+    public void ToolAmountUp() => SetToolAmount(ToolAmountMultiplier.Value + AMOUNT_MULTIPLIER_STEP);
+    public void ToolAmountDown() => SetToolAmount(ToolAmountMultiplier.Value - AMOUNT_MULTIPLIER_STEP);
+    public void SetToolAmount(float value) =>
+        SetSnappedValue(ToolAmountMultiplier, value, MIN_TOOL_AMOUNT_MULTIPLIER, MAX_TOOL_AMOUNT_MULTIPLIER, AMOUNT_MULTIPLIER_STEP);
+
+    private void StepAmount(NetworkVariable<float> amount, int direction)
+    {
+        SetAmount(amount, amount.Value + direction * AMOUNT_MULTIPLIER_STEP);
+    }
+
+    private void SetAmount(NetworkVariable<float> amount, float value)
+    {
+        SetSnappedValue(amount, value, MIN_AMOUNT_MULTIPLIER, MAX_AMOUNT_MULTIPLIER, AMOUNT_MULTIPLIER_STEP);
+    }
+
+    private void SetSnappedValue(NetworkVariable<float> variable, float value, float min, float max, float step)
+    {
         if (!IsServer) return;
 
-        value = Mathf.Clamp(value, MIN_CONTAMINATION_MULTIPLIER, MAX_CONTAMINATION_MULTIPLIER);
+        value = Mathf.Clamp(value, min, max);
 
-        // 0.25 단위로 스냅 (float 덧셈이 쌓여 1.2499999 같은 값이 되는 것을 방지)
-        value = Mathf.Round(value / CONTAMINATION_MULTIPLIER_STEP) * CONTAMINATION_MULTIPLIER_STEP;
+        // step 단위로 스냅 (float 덧셈이 쌓여 1.2499999 같은 값이 되는 것을 방지)
+        value = Mathf.Round(value / step) * step;
 
-        multiplier.Value = value;
+        variable.Value = value;
     }
 }

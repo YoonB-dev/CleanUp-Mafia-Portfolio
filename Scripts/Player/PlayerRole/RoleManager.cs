@@ -40,6 +40,11 @@ public class RoleManager : NetworkBehaviour
         if (IsServer)
         {
             RoleAssignmentManager.Instance?.UnregisterPlayer(this);
+            // 판 도중 나간 마피아도 결과 화면에 보여 주도록 이름을 남겨 둔다
+            if (CurrentRole == PlayerRole.Mafia && TryGetComponent(out PlayerData data))
+            {
+                InGameManager.Instance?.RecordDepartedMafia(data.GetDisplayName());
+            }
         }
     }
 

@@ -5,6 +5,7 @@ using UnityEngine.UI;
 using TMPro;
 using UnityEngine.InputSystem;
 using UnityEngine.Localization;
+using UnityEngine.Localization.Settings;
 using System;
 
 public class RoomUIController : MonoBehaviour
@@ -45,6 +46,30 @@ public class RoomUIController : MonoBehaviour
     [SerializeField] private Button paintMultiplierUpButton;
     [SerializeField] private Button paintMultiplierDownButton;
     [SerializeField] private TMP_Text paintMultiplierText;
+
+    [Header("시작 오염량 세팅")]
+    [Header("쓰레기 양")]
+    [SerializeField] private Button trashAmountUpButton;
+    [SerializeField] private Button trashAmountDownButton;
+    [SerializeField] private TMP_Text trashAmountText;
+
+    [Header("박스 양")]
+    [SerializeField] private Button boxAmountUpButton;
+    [SerializeField] private Button boxAmountDownButton;
+    [SerializeField] private TMP_Text boxAmountText;
+
+    [Header("페인트 양")]
+    [SerializeField] private Button paintAmountUpButton;
+    [SerializeField] private Button paintAmountDownButton;
+    [SerializeField] private TMP_Text paintAmountText;
+
+    [Header("도구 양")]
+    [SerializeField] private Button toolAmountUpButton;
+    [SerializeField] private Button toolAmountDownButton;
+    [SerializeField] private TMP_Text toolAmountText;
+
+    [Header("작업 현장")]
+    [SerializeField] private MapSelectUI mapSelect;
 
     [Header("Ready / 게임 시작")]
     [SerializeField] private Button readyButton;
@@ -94,6 +119,15 @@ public class RoomUIController : MonoBehaviour
             paintMultiplierDownButton.onClick.AddListener(() => RoomSettings.Instance.PaintMultiplierDown());
             boxMultiplierUpButton.onClick.AddListener(() => RoomSettings.Instance.BoxMultiplierUp());
             boxMultiplierDownButton.onClick.AddListener(() => RoomSettings.Instance.BoxMultiplierDown());
+            // 시작 오염량 증감
+            trashAmountUpButton.onClick.AddListener(() => RoomSettings.Instance.TrashAmountUp());
+            trashAmountDownButton.onClick.AddListener(() => RoomSettings.Instance.TrashAmountDown());
+            boxAmountUpButton.onClick.AddListener(() => RoomSettings.Instance.BoxAmountUp());
+            boxAmountDownButton.onClick.AddListener(() => RoomSettings.Instance.BoxAmountDown());
+            paintAmountUpButton.onClick.AddListener(() => RoomSettings.Instance.PaintAmountUp());
+            paintAmountDownButton.onClick.AddListener(() => RoomSettings.Instance.PaintAmountDown());
+            if (toolAmountUpButton != null) toolAmountUpButton.onClick.AddListener(() => RoomSettings.Instance.ToolAmountUp());
+            if (toolAmountDownButton != null) toolAmountDownButton.onClick.AddListener(() => RoomSettings.Instance.ToolAmountDown());
 
             // InputField 직접 입력 처리
             if (playerCountInputField != null) playerCountInputField.onEndEdit.AddListener(OnPlayerCountInputChanged);
@@ -143,6 +177,12 @@ public class RoomUIController : MonoBehaviour
     }
 
     private void OnClientCountChanged(ulong clientId) => Refresh();
+
+    // 빈자리·준비 버튼처럼 코드가 채우는 문구는 언어를 바꾸면 다시 채운다
+    private void OnEnable() => LocalizationSettings.SelectedLocaleChanged += OnLocaleChanged;
+    private void OnDisable() => LocalizationSettings.SelectedLocaleChanged -= OnLocaleChanged;
+    private void OnLocaleChanged(Locale locale) => Refresh();
+
     private void OnDestroy()
     {
         if (NetworkManager.Singleton != null)
@@ -173,6 +213,14 @@ public class RoomUIController : MonoBehaviour
         SetHostOnlyButton(paintMultiplierDownButton, isHost);
         SetHostOnlyButton(boxMultiplierUpButton, isHost);
         SetHostOnlyButton(boxMultiplierDownButton, isHost);
+        SetHostOnlyButton(trashAmountUpButton, isHost);
+        SetHostOnlyButton(trashAmountDownButton, isHost);
+        SetHostOnlyButton(boxAmountUpButton, isHost);
+        SetHostOnlyButton(boxAmountDownButton, isHost);
+        SetHostOnlyButton(paintAmountUpButton, isHost);
+        SetHostOnlyButton(paintAmountDownButton, isHost);
+        SetHostOnlyButton(toolAmountUpButton, isHost);
+        SetHostOnlyButton(toolAmountDownButton, isHost);
 
         // 인풋 필드 호스트만 조작 가능하도록 설정
         if (playerCountInputField != null) playerCountInputField.interactable = isHost;
@@ -201,6 +249,10 @@ public class RoomUIController : MonoBehaviour
         if (trashMultiplierText != null) trashMultiplierText.text = FormatMultiplier(RoomSettings.Instance.TrashContaminationMultiplier.Value);
         if (paintMultiplierText != null) paintMultiplierText.text = FormatMultiplier(RoomSettings.Instance.PaintContaminationMultiplier.Value);
         if (boxMultiplierText != null) boxMultiplierText.text = FormatMultiplier(RoomSettings.Instance.BoxContaminationMultiplier.Value);
+        if (trashAmountText != null) trashAmountText.text = FormatMultiplier(RoomSettings.Instance.TrashAmountMultiplier.Value);
+        if (boxAmountText != null) boxAmountText.text = FormatMultiplier(RoomSettings.Instance.BoxAmountMultiplier.Value);
+        if (paintAmountText != null) paintAmountText.text = FormatMultiplier(RoomSettings.Instance.PaintAmountMultiplier.Value);
+        if (toolAmountText != null) toolAmountText.text = FormatMultiplier(RoomSettings.Instance.ToolAmountMultiplier.Value);
 
         // InputField에 편집 중이 아닐 때만 갱신 (편집 중에 강제로 덮어쓰지 않기 위함)
         if (playerCountInputField != null && !playerCountInputField.isFocused) playerCountInputField.text = RoomSettings.Instance.PlayerCount.Value.ToString();
@@ -208,6 +260,7 @@ public class RoomUIController : MonoBehaviour
         if (playTimeInputField != null && !playTimeInputField.isFocused) playTimeInputField.text = RoomSettings.Instance.PlayTimeMinutes.Value.ToString();
 
         if (steamRoomIDText != null) steamRoomIDText.text = RoomSettings.Instance.RoomCode.Value.ToString();
+        if (mapSelect != null) mapSelect.Refresh();
 
         // 참여자 수 표시
         if (participantCountText != null)

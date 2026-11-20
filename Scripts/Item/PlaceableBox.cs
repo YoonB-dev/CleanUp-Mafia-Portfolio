@@ -12,6 +12,10 @@ public class PlaceableBox : NetworkBehaviour, IPickupListener
     // 무너짐 연출용 변수
     private float randomPushForce = 3.0f;  // 양옆으로 튕기는 힘의 세기
     private float randomTorqueForce = 1.0f; // 회전하며 떨어지는 힘의 세기
+
+    [Header("Sound")]
+    [Tooltip("배치 구역에 내려놓을 때 나는 소리 (SO/Sound/SFX/Item/BoxPlaceSound). 비워 두면 소리 없음")]
+    [SerializeField] private SoundData placeSound;
     // 배치 상태여부.
     private readonly NetworkVariable<bool> _isPlacedNet = new(
         false,
@@ -68,6 +72,14 @@ public class PlaceableBox : NetworkBehaviour, IPickupListener
 
         // 점수 추가
         ScoreManager.Instance?.AddBoxScore();
+
+        PlayPlaceSoundClientRpc(targetPosition);
+    }
+
+    [ClientRpc]
+    private void PlayPlaceSoundClientRpc(Vector3 position)
+    {
+        if (placeSound != null && SoundManager.Instance != null) SoundManager.Instance.PlaySFXAt(placeSound, position);
     }
 
     /// <summary>

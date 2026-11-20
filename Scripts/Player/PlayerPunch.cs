@@ -16,6 +16,7 @@ public class PlayerPunch : NetworkBehaviour
     private const float HOLD_DURATION = 0.06f;      // 다 휘두른 자세 유지(따라나감)
     private const float RECOVER_DURATION = 0.45f;   // 팔이 흐물흐물 돌아오는 시간
     private const float PUNCH_INTERVAL = 0.75f;     // 다음 펀치까지 최소 간격(홀드 연타 주기)
+    private const float HIT_GRACE = 0.12f;          // 팔이 늦게 따라와 다 휘두른 뒤에도 잠깐 판정을 유지한다
 
     private const float WINDUP_END = WINDUP_DURATION;
     private const float STRIKE_END = WINDUP_END + STRIKE_DURATION;
@@ -25,7 +26,7 @@ public class PlayerPunch : NetworkBehaviour
     [Header("타격")]
     [Tooltip("주먹 판정 반경. 팔이 늦게 따라오므로 넉넉하게 잡는다")]
     [SerializeField]
-    private float _hitRadius = 0.35f;
+    private float _hitRadius = 0.55f;
 
     [Tooltip("맞은 플레이어가 날아가는 속도 (m/s)")]
     [SerializeField]
@@ -58,6 +59,16 @@ public class PlayerPunch : NetworkBehaviour
     [FormerlySerializedAs("_objectHitSound")]
     private SoundData _defaultObjectHitSound;
 
+    [Header("이펙트")]
+    [Tooltip("플레이어를 때렸을 때 맞은 자리에서 터지는 먼지 (VFX/HitDust/Prefabs/Hit_Dust_FX)")]
+    [SerializeField]
+    private HitDustFX _playerHitDust;
+
+    // 연타로 먼지가 겹쳐도 끊기지 않을 만큼만 돌려 쓴다
+    private const int HIT_DUST_POOL_SIZE = 4;
+    private readonly HitDustFX[] _hitDustPool = new HitDustFX[HIT_DUST_POOL_SIZE];
+    private int _nextHitDust;
+
     // 넉백 옆방향 각도
     private const float LAUNCH_SIDE_ANGLE = 70f;
 
@@ -82,7 +93,7 @@ public class PlayerPunch : NetworkBehaviour
         get
         {
             float elapsed = Time.time - _punchStartTime;
-            return elapsed >= WINDUP_END && elapsed <= HOLD_END;
+            return elapsed >= WINDUP_END && elapsed <= HOLD_END + HIT_GRACE;
         }
     }
 
@@ -308,13 +319,13 @@ public class PlayerPunch : NetworkBehaviour
 
     /// <summary>
     /// 타격 판정은 서버에서만 하므로 모든 클라이언트에 소리를 알린다 (한 펀치에 한 번). [서버 전용] <br/>
-    /// 플레이어를 맞혔으면 플레이어 타격음, 아니면 맞은 물체의 소리(물체 쪽 설정)를 재생한다.
+    /// 플레이어를 맞혔으면 플레이어 타격음과 먼지, 아니면 맞은 물체의 소리(물체 쪽 설정)를 재생한다.
     /// </summary>
     private void ServerNotifyHitSound(Vector3 fist, bool hitPlayer, Rigidbody closestObject)
     {
         if (hitPlayer)
         {
-            PlayPlayerHitSoundClientRpc(fist);
+            PlayPlayerHitClientRpc(fist);
             return;
         }
 
@@ -325,9 +336,39 @@ public class PlayerPunch : NetworkBehaviour
     }
 
     [ClientRpc]
-    private void PlayPlayerHitSoundClientRpc(Vector3 position)
+    private void PlayPlayerHitClientRpc(Vector3 position)
     {
         SoundManager.Instance?.PlaySFXAt(_playerHitSound, position);
+        PlayHitDust(position);
+    }
+
+    /// <summary>
+    /// 맞은 자리에서 때린 사람 쪽으로 먼지를 터뜨린다. 먼지는 월드에 남으므로 캐릭터가 날아가도 끌려가지 않는다
+    /// </summary>
+    private void PlayHitDust(Vector3 position)
+    {
+        if (_playerHitDust == null) return;
+
+        HitDustFX dust = _hitDustPool[_nextHitDust];
+        if (dust == null)
+        {
+            dust = Instantiate(_playerHitDust);
+            _hitDustPool[_nextHitDust] = dust;
+        }
+        _nextHitDust = (_nextHitDust + 1) % HIT_DUST_POOL_SIZE;
+
+        Vector3 outward = transform.position - position;
+        outward.y = 0f;
+        dust.PlayAt(position, outward);
+    }
+
+    public override void OnDestroy()
+    {
+        foreach (HitDustFX dust in _hitDustPool)
+        {
+            if (dust != null) Destroy(dust.gameObject);
+        }
+        base.OnDestroy();
     }
 
     [ClientRpc]

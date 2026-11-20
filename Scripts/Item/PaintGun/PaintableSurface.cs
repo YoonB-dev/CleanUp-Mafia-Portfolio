@@ -24,7 +24,7 @@ public class PaintableSurface : MonoBehaviour
     [Header("Overlay Settings")]
     [Tooltip("Custom/PaintOverlayURP 셰이더. 원본 머테리얼 위에 덧그려지는 투명 레이어용.")]
     [SerializeField] private Shader overlayShader;
-    [SerializeField] private Color paintColor = new Color(0.8f, 0.05f, 0.05f, 1f);
+    [SerializeField] private Color paintColor = new Color(0.55f, 0.06f, 0.05f, 1f);
     [Tooltip("원본 표면과 겹칠 때 Z-fighting을 막기 위한 노멀 방향 오프셋")]
     [SerializeField] private float normalOffset = 0.001f;
     public RenderTexture Canvas { get; private set; }
@@ -35,6 +35,9 @@ public class PaintableSurface : MonoBehaviour
 
     /// <summary>칠해진 실제 면적(m²). 서버가 페인트 마스크를 읽을 때 갱신. 페인트 점수는 이 값의 합으로 계산한다</summary>
     public float PaintedArea { get; set; } = 0f;
+
+    /// <summary>마지막으로 읽은 페인트 마스크에서 칠해진 픽셀 수. 픽셀당 면적 측정이 늦게 끝나도 면적을 다시 계산할 수 있게 둔다</summary>
+    public int PaintedPixels { get; set; } = 0;
 
     /// <summary>페인트 마스크 1픽셀이 덮는 평균 월드 면적(m²). 등록 시 GPU로 한 번 측정하며, 0이면 아직 측정 전</summary>
     public float AreaPerPixel { get; set; } = 0f;

@@ -3,6 +3,8 @@ using TMPro;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Localization;
+using UnityEngine.Localization.Settings;
 using UnityEngine.UI;
 
 /// <summary>
@@ -26,6 +28,7 @@ public class ChatUIController : SceneSingleton<ChatUIController>
     [SerializeField] private float logHideDelay = 10f;
     [SerializeField] private Color allColor = Color.white;
     [SerializeField] private Color mafiaColor = new Color(1f, 0.45f, 0.45f);
+    [SerializeField] private Color systemColor = new Color(1f, 0.85f, 0.3f);
 
     private readonly List<string> _lines = new();
 
@@ -51,11 +54,13 @@ public class ChatUIController : SceneSingleton<ChatUIController>
     {
         openChatAction.action.performed += OnOpenChat;
         openChatAction.action.Enable();
+        LocalizationSettings.SelectedLocaleChanged += OnLocaleChanged;
     }
 
     private void OnDisable()
     {
         openChatAction.action.performed -= OnOpenChat;
+        LocalizationSettings.SelectedLocaleChanged -= OnLocaleChanged;
         if (_isOpen) SetOpen(false);
     }
 
@@ -63,9 +68,30 @@ public class ChatUIController : SceneSingleton<ChatUIController>
     {
         bool mafia = channel == ChatChannel.Mafia;
         string color = ColorUtility.ToHtmlStringRGB(mafia ? mafiaColor : allColor);
-        string prefix = mafia ? "[마피아] " : string.Empty;
+        string prefix = mafia ? SettingsText.Translate("chat_channel_mafia") + " " : string.Empty;
 
-        _lines.Add($"<color=#{color}>{prefix}{senderName}: {text}</color>");
+        AddLine($"<color=#{color}>{prefix}{senderName}: {text}</color>");
+    }
+
+    /// <summary>보낸 사람 없이 안내 문구를 채팅창에 띄운다 (방장 위임 등)</summary>
+    public void AddSystemMessage(string text)
+    {
+        AddLine($"<color=#{ColorUtility.ToHtmlStringRGB(systemColor)}>{text}</color>");
+    }
+
+    /// <summary>방장이 바뀌어 대기방을 다시 불러올 때 이어 붙이려고 지금까지의 채팅을 넘긴다</summary>
+    public List<string> CopyLines() => new(_lines);
+
+    public void RestoreLines(List<string> lines)
+    {
+        _lines.Clear();
+        _lines.AddRange(lines);
+        logText.text = string.Join("\n", _lines);
+    }
+
+    private void AddLine(string line)
+    {
+        _lines.Add(line);
         if (_lines.Count > maxLines) _lines.RemoveAt(0);
 
         logText.text = string.Join("\n", _lines);
@@ -99,6 +125,10 @@ public class ChatUIController : SceneSingleton<ChatUIController>
         // 채팅 열기는 PlayerInput을 거치지 않으므로 메뉴가 열려 있는지 직접 본다
         PauseMenuController menu = PauseMenuController.Instance;
         if (menu != null && menu.IsOpen) return;
+
+        // 작업 지시서도 조작을 끊어 두므로, 채팅이 닫히며 조작을 되살리지 않게 막는다
+        InstructionSheetUI sheet = InstructionSheetUI.Instance;
+        if (sheet != null && sheet.IsOpen) return;
 
         _openedFrame = Time.frameCount;
         SetOpen(true);
@@ -154,10 +184,12 @@ public class ChatUIController : SceneSingleton<ChatUIController>
         UpdateChannelLabel();
     }
 
+    private void OnLocaleChanged(Locale locale) => UpdateChannelLabel();
+
     private void UpdateChannelLabel()
     {
         bool mafia = _channel == ChatChannel.Mafia;
-        channelLabel.text = mafia ? "[마피아]" : "[전체]";
+        channelLabel.text = SettingsText.Translate(mafia ? "chat_channel_mafia" : "chat_channel_all");
         channelLabel.color = mafia ? mafiaColor : allColor;
     }
 

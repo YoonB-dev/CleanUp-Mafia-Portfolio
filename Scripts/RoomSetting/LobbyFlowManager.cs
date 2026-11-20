@@ -9,7 +9,8 @@ public class LobbyFlowManager : NetworkBehaviour
     [SerializeField] private GameObject lobbyCharacterPrefab; // 로비에서 보여줄 캐릭터 프리팹
     [SerializeField] private GameObject roomSettingsPrefab;
     private string lobbySceneName = "LobbyScene"; // 로비 씬 이름
-    private string playSceneName = "TestPlayScene";
+    [Tooltip("게임 시작 시 넘어갈 씬. 맵은 이 씬의 InGameManager가 Additive로 불러온다")]
+    [SerializeField] private string playSceneName = "InGameScene";
     public void Awake()
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }

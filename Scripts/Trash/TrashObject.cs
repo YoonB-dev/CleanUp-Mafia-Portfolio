@@ -34,6 +34,9 @@ public class TrashObject : NetworkBehaviour
         }
     }
 
+    /// <summary>이 프리팹이 동기화할 수 있는 모든 쓰레기 종류</summary>
+    public TrashData[] TrashDatabase => trashDatabase;
+
     #region Unity Editor
     private void OnValidate()
     {
@@ -75,10 +78,10 @@ public class TrashObject : NetworkBehaviour
         trashDataIndex.OnValueChanged -= OnTrashDataChanged;
     }
 
-    // --- 서버 전용 초기화 ---
+    // --- 서버 전용 초기화 (스폰 전에 호출) ---
     public void ServerInitialize(TrashData data)
     {
-        if (!IsServer || data == null) return;
+        if (data == null) return;
 
         // 1. 전달받은 TrashData가 내 데이터베이스(trashDatabase)의 몇 번째 인덱스인지 조회
         int targetIndex = System.Array.IndexOf(trashDatabase, data);
