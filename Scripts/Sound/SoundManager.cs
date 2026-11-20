@@ -15,6 +15,7 @@ public class SoundManager : PersistentSingleton<SoundManager>
 
     private BgmPlayer _bgm;
     private SfxPlayer _sfx;
+    private AudioMixerGroup _sfxGroup;
 
     protected override void Awake()
     {
@@ -23,7 +24,8 @@ public class SoundManager : PersistentSingleton<SoundManager>
 
         AudioMixer mixer = SettingsManager.Instance != null ? SettingsManager.Instance.Mixer : null;
         _bgm = new BgmPlayer(transform, FindGroup(mixer, BGM_GROUP_NAME));
-        _sfx = new SfxPlayer(transform, FindGroup(mixer, SFX_GROUP_NAME));
+        _sfxGroup = FindGroup(mixer, SFX_GROUP_NAME);
+        _sfx = new SfxPlayer(transform, _sfxGroup);
     }
 
     private void Update()
@@ -81,6 +83,32 @@ public class SoundManager : PersistentSingleton<SoundManager>
     public void StopAllSFX()
     {
         _sfx.StopAll();
+    }
+
+    /// <summary>
+    /// 누르고 있는 동안 계속 나는 소리(분사 등)용 반복 AudioSource를 대상 아래에 만든다. <br/>
+    /// 대상을 따라 움직이는 3D 소리이며 SFX 믹서 그룹으로 나간다. 재생/정지/볼륨은 호출하는 쪽이 관리한다
+    /// </summary>
+    public AudioSource CreateLoopSource(SoundData sfx, Transform parent)
+    {
+        if (sfx == null || parent == null) return null;
+
+        GameObject sourceObject = new GameObject("LoopSFX");
+        sourceObject.transform.SetParent(parent, false);
+
+        AudioSource source = sourceObject.AddComponent<AudioSource>();
+        source.playOnAwake = false;
+        source.loop = true;
+        source.clip = sfx.FirstClip;
+        source.volume = 0f;
+        source.pitch = sfx.GetRandomPitch();
+        source.spatialBlend = 1f;
+        source.minDistance = sfx.MinDistance;
+        source.maxDistance = sfx.MaxDistance;
+        source.rolloffMode = AudioRolloffMode.Linear;  // 다른 효과음과 같은 감쇠 방식
+        source.dopplerLevel = 0f;
+        source.outputAudioMixerGroup = _sfxGroup;      // 설정 창의 SFX 볼륨이 여기에 걸린다
+        return source;
     }
 
     // 내부 -----------------------------------------------------------------

@@ -27,7 +27,16 @@ public class RagdollGroundContact : MonoBehaviour
     private void OnCollisionEnter(Collision collision)
     {
         Report(collision);
+
+        // 쓰러진 동안(펀치에 맞음·돌진) 처음 부딪힌 순간은 벽이든 바닥이든 충돌음을 낸다 (소리는 PlayerKnockdown이 정리해서 낸다)
+        if (_driver != null && _driver.IsLimp && collision.contactCount > 0 && !IsOwnBody(collision.transform))
+        {
+            _driver.ReportImpact(collision.GetContact(0).point, collision.relativeVelocity.magnitude);
+        }
     }
+
+    private bool IsOwnBody(Transform other) =>
+        other.IsChildOf(_ragdollRoot) || (_playerRoot != null && other.IsChildOf(_playerRoot));
 
     // 이미 닿은 채로 쓰러지는 경우가 있어 Enter만으로는 놓친다
     private void OnCollisionStay(Collision collision)

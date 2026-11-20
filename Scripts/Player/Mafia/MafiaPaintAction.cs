@@ -26,6 +26,23 @@ public class MafiaPaintAction : NetworkBehaviour
     [SerializeField] private float rechargeRatePerSecond = 0.1f;
     [Tooltip("발사 중단 후 회복 시작까지의 대기 시간(초)")]
     [SerializeField] private float rechargeDelay = 1.0f; // 재사용 딜레이
+
+    [Header("VFX")]
+    [Tooltip("총구 분사 이펙트 프리팹 (Paint_Jet_FX). muzzleTransform의 +Z 방향으로 나간다")]
+    [SerializeField] private PaintJetFX paintJetPrefab;
+    [Tooltip("착탄 지점에서 튀는 방울 이펙트 프리팹 (Paint_Impact_FX)")]
+    [SerializeField] private ParticleSystem paintImpactPrefab;
+    [Tooltip("칠하는 동안 방울을 다시 튀기는 간격(초)")]
+    [SerializeField] private float impactSplashInterval = 0.25f;
+    [Tooltip("간격에 더하는 랜덤 ±초. 일정한 박자로 튀는 느낌을 줄인다")]
+    [SerializeField] private float impactSplashRandomness = 0.1f;
+
+    [Header("Sound")]
+    [Tooltip("분사하는 동안 반복 재생할 소리 (SO/Sound/SFX/Item/PaintSound)")]
+    [SerializeField] private SoundData paintSound;
+    [Tooltip("분사 소리가 켜지고 꺼지는 페이드 시간(초)")]
+    [SerializeField] private float paintSoundFade = 0.08f;
+
     // 서버 측 패킷 연사 방지용 타임스탬프
     private float _serverNextFireTime;
     // 서버 사거리 검증 여유. 요청이 도착하는 동안 플레이어가 움직인 거리만큼 봐준다
@@ -33,6 +50,12 @@ public class MafiaPaintAction : NetworkBehaviour
     // ===== 네트워크 상태 변수 (0.0 ~ 1.0 범위) =====
     private readonly NetworkVariable<float> _currentPaint = new(
         1.0f,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
+    // 발사 상태는 서버와 오너만 알고 있으므로, 다른 클라이언트도 분사 이펙트를 보도록 복제한다
+    private readonly NetworkVariable<bool> _isFiringSynced = new(
+        false,
         NetworkVariableReadPermission.Everyone,
         NetworkVariableWritePermission.Server
     );
@@ -51,6 +74,11 @@ public class MafiaPaintAction : NetworkBehaviour
     private bool _isFiring = false;     // 현재 마우스를 누르고 있는지 여부
     private float _lastFireTime;        // 회복 딜레이 계산용 타임스탬프
 
+    private PaintJetFX _paintJet;
+    private ParticleSystem _paintImpact;
+    private float _nextImpactSplashTime;
+    private AudioSource _paintAudio;
+
     private void Awake()
     {
         _roleManager = GetComponent<RoleManager>();
@@ -60,6 +88,24 @@ public class MafiaPaintAction : NetworkBehaviour
         _gate = PlayerActionGate.GetOrAdd(gameObject);
 
         if (paintGunObject != null) paintGunObject.SetActive(false); // 처음엔 꺼둠
+
+        // 분사는 총구에 붙여 총과 함께 켜지고 꺼지게 한다
+        if (paintJetPrefab != null && muzzleTransform != null)
+        {
+            _paintJet = Instantiate(paintJetPrefab, muzzleTransform);
+            // 칠해지는 표면에서 줄기가 멈추도록 판정 레이어를 맞춘다
+            _paintJet.collideWithSurfaces = true;
+            _paintJet.paintSurfaceLayers = paintableLayers;
+        }
+
+        // 착탄 방울은 월드 공간에 남으므로 총이 꺼져도 사라지지 않게 플레이어 아래에 둔다
+        if (paintImpactPrefab != null) _paintImpact = Instantiate(paintImpactPrefab, transform);
+
+        // 분사 소리는 총구에서 나는 3D 소리로, 총이 꺼지면 같이 꺼진다
+        if (paintSound != null && SoundManager.Instance != null)
+        {
+            _paintAudio = SoundManager.Instance.CreateLoopSource(paintSound, muzzleTransform != null ? muzzleTransform : transform);
+        }
     }
 
     public override void OnNetworkSpawn()
@@ -160,6 +206,7 @@ public class MafiaPaintAction : NetworkBehaviour
         if (!shouldShow)
         {
             _isFiring = false;
+            if (IsServer) _isFiringSynced.Value = false;
         }
     }
     // 총을 손에 붙이기
@@ -244,6 +291,7 @@ public class MafiaPaintAction : NetworkBehaviour
     private void SetFiringServerRpc(bool firing)
     {
         _isFiring = firing;
+        _isFiringSynced.Value = firing;
     }
 
     private void Update()
@@ -253,6 +301,9 @@ public class MafiaPaintAction : NetworkBehaviour
         {
             UpdatePaintServerLogic();
         }
+
+        // 2. 분사 이펙트는 모든 클라이언트에서 같은 조건으로 켜고 끈다
+        UpdatePaintJet();
 
         // 내 오브젝트이고, 총을 꺼냈고, 마우스를 누르고 있는 3가지 조건이 다 맞을 때만 작동
         if (!IsOwner || _inventory == null || _inventory.CurrentSlot != PlayerActionGate.PAINT_GUN_SLOT || !_isFiring) return;
@@ -284,6 +335,36 @@ public class MafiaPaintAction : NetworkBehaviour
         }
     }
 
+    private void UpdatePaintJet()
+    {
+        // 오너는 입력 지연 없이 로컬 값을, 나머지는 서버가 복제한 값을 쓴다
+        bool firing = IsOwner ? _isFiring : _isFiringSynced.Value;
+        bool spraying = firing && _currentPaint.Value > 0f && _gate.CanDo(PlayerAction.FirePaint);
+
+        if (_paintJet != null) _paintJet.SetSpraying(spraying);
+        UpdatePaintSound(spraying);
+    }
+
+    /// <summary>
+    /// 분사 이펙트와 같은 조건으로 소리를 켜고 끈다. 뚝 끊기지 않게 짧게 페이드한다
+    /// </summary>
+    private void UpdatePaintSound(bool spraying)
+    {
+        if (_paintAudio == null || !_paintAudio.isActiveAndEnabled) return;
+
+        if (spraying && !_paintAudio.isPlaying)
+        {
+            _paintAudio.pitch = paintSound.GetRandomPitch();
+            _paintAudio.Play();
+        }
+
+        float target = spraying ? paintSound.Volume : 0f;
+        float step = paintSound.Volume * Time.deltaTime / Mathf.Max(0.01f, paintSoundFade);
+        _paintAudio.volume = Mathf.MoveTowards(_paintAudio.volume, target, step);
+
+        if (!spraying && _paintAudio.volume <= 0f && _paintAudio.isPlaying) _paintAudio.Stop();
+    }
+
     private void ShootPaint()
     {
         if (_playerCamera == null) return;
@@ -295,11 +376,11 @@ public class MafiaPaintAction : NetworkBehaviour
         if (paintable == null) return;
 
         // 브러시는 월드 좌표 기준으로 그리므로 맞은 지점(월드)을 보낸다. 반경은 서버가 정한다
-        RequestPaintServerRpc(paintable.SurfaceId, hit.point);
+        RequestPaintServerRpc(paintable.SurfaceId, hit.point, hit.normal);
     }
 
     [ServerRpc]
-    private void RequestPaintServerRpc(int surfaceId, Vector3 point)
+    private void RequestPaintServerRpc(int surfaceId, Vector3 point, Vector3 normal)
     {
         // 총을 꺼낸 마피아만 칠할 수 있음(치트 방어)
         if (_roleManager == null || _roleManager.CurrentRole != PlayerRole.Mafia) return;
@@ -318,13 +399,28 @@ public class MafiaPaintAction : NetworkBehaviour
         if (_inventory == null || _inventory.CurrentSlot != PlayerActionGate.PAINT_GUN_SLOT || !_isFiring) return;
 
         // 모든 검증 통과 시 클라이언트에 그리기 전파 (반경은 서버 설정값)
-        ApplyPaintClientRpc(surfaceId, point, brushRadius);
+        ApplyPaintClientRpc(surfaceId, point, normal, brushRadius);
     }
 
     [ClientRpc]
-    private void ApplyPaintClientRpc(int surfaceId, Vector3 point, float radius)
+    private void ApplyPaintClientRpc(int surfaceId, Vector3 point, Vector3 normal, float radius)
     {
         PaintSurfaceManager.Instance.DrawAt(surfaceId, point, radius, isPaint: true);
+        PlayImpactSplash(point, normal);
+    }
+
+    /// <summary>
+    /// 실제로 칠해진 지점에서 방울을 튀긴다. 매 발사마다 튀기면 과하므로 간격을 둔다
+    /// </summary>
+    private void PlayImpactSplash(Vector3 point, Vector3 normal)
+    {
+        if (_paintImpact == null || Time.time < _nextImpactSplashTime) return;
+        _nextImpactSplashTime = Time.time + Mathf.Max(0.05f, impactSplashInterval + Random.Range(-impactSplashRandomness, impactSplashRandomness));
+
+        _paintImpact.transform.SetPositionAndRotation(point + normal * 0.01f, Quaternion.LookRotation(normal));
+        // 이전 방울은 지우지 않고 남긴 채 버스트만 다시 낸다
+        _paintImpact.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+        _paintImpact.Play(true);
     }
 
     private void OnPaintValueChanged(float previousValue, float newValue)

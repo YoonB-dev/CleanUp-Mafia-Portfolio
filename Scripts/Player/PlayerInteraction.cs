@@ -10,19 +10,31 @@ public class PlayerInteraction : NetworkBehaviour
     [SerializeField] private float interactDistance = 5f;
     [SerializeField] private float pickupRadius = 0.2f;    // 줍기 판정 구체 반지름 (작은 아이템 보정용)
     [SerializeField] private LayerMask pickupLayerMask = ~0;
+    [Tooltip("카메라와 아이템 사이를 가리면 줍지 못하게 막는 레이어 (벽, 바닥 등). 비워두면 Default/Ground/Wall/Floor/Stair")]
+    [SerializeField] private LayerMask pickupObstacleMask;
 
     private BoxPlacementPreview _placementPreview; // 박스 배치 프리뷰를 관리하는 컴포넌트(스크립트)
     private PlayerInventory _inventory; // 플레이어의 인벤토리 인터페이스
     public PlayerInventory Inventory => _inventory; // 외부에서 인벤토리 접근용
     private PickupItem hoveredItem; // 플레이어가 현재 바라보고 있는 아이템
     private DraggableObject hoveredDraggable; // 플레이어가 현재 바라보고 있는 드래그 가능한 오브젝트
+    private Component hoveredButton; // 플레이어가 현재 바라보고 있는 투표 버튼이나 차단기
+
+    // 바라보는 물체 안내. 대상이나 남은 시간이 바뀔 때만 문구를 다시 만든다
+    private const string PICKUP_ACTION = "Player/Interaction_PickItem";
+    private const string BUTTON_ACTION = "Player/Interaction-lignt";
+    private const int PLACE_VARIANT = -1; // 같은 상자라도 줍기와 배치 안내를 구분한다
+    private Object _promptTarget;
+    private int _promptVariant;
+    private string _promptKey;
+    private string _promptLabel;
     // 두꺼비집 관련 컴포넌트
     private LightInteraction _lightInteraction;
     private PlayerActionGate _gate;
 
     // ======== 아이템 던지기(강하게) 관련 변수 ========
     private float gaugeChargeTime = 1.5f; // 게이지가 최대치까지 충전되는 시간
-    private float minThrowForce = 2f; // 최소 던지기 힘 -> 0.3초에서 시작
+    private float minThrowForce = 2f; // 최소 던지기 힘 -> 0.2초에서 시작
     private float maxThrowForce = 10f; // 최대 던지기 힘 -> 2초에서 최대
     private float _dropKeyPressTime; // 키를 누르기 시작한 시간
     private bool _isChargingThrow = false;
@@ -30,9 +42,19 @@ public class PlayerInteraction : NetworkBehaviour
     private float _serverThrowChargeStartTime = float.NegativeInfinity; // [서버] 충전 시작 시각. 던지는 힘은 이 시각부터 잰다
     public float CurrentThrowGauge => _currentThrowGauge; // UI에서 접근할 프로퍼티
 
+    private const float THROW_HOLD_THRESHOLD = 0.2f; // 이보다 짧게 누르면 던지지 않고 앞에 툭 내려놓는다
+
     [Header("Throw Rotation Settings")]
     [SerializeField] private float minThrowTorque = 1f;  // 살짝 던졌을 때의 회전력
     [SerializeField] private float maxThrowTorque = 8f;  // 풀차징으로 던졌을 때의 회전력
+
+    [Header("던지기 소리")]
+    [SerializeField] private SoundData dropSound;         // 툭 내려놓을 때 (모두에게 들린다)
+    [SerializeField] private SoundData throwSound;        // 힘줘서 던질 때 (모두에게 들린다)
+    [SerializeField] private SoundData throwChargeSound;  // 게이지가 차는 동안 반복 (나만 들린다)
+    [Tooltip("게이지 0 → 1 동안 충전음 피치. 차오를수록 높아진다")]
+    [SerializeField] private Vector2 throwChargePitch = new(0.85f, 1.9f);
+    private AudioSource _throwChargeSource;
     
     public RagdollPoser playerRagDollPoser; // 인스펙터에서 연결
     private DraggableObject _activeDragableObject; // 현재 끌고 있는 드래그 오브젝트(예: 이동식 분쇄기)
@@ -47,6 +69,11 @@ public class PlayerInteraction : NetworkBehaviour
         _lightInteraction = GetComponent<LightInteraction>();
         _inventory = GetComponent<PlayerInventory>();
         _gate = PlayerActionGate.GetOrAdd(gameObject);
+
+        if (pickupObstacleMask == 0)
+        {
+            pickupObstacleMask = LayerMask.GetMask("Default", "Ground", "Wall", "Floor", "Stair");
+        }
     }
 
     private void Update()
@@ -67,9 +94,38 @@ public class PlayerInteraction : NetworkBehaviour
         {
             float holdDuration = Time.time - _dropKeyPressTime;
 
-            // 0초부터 바로 오르기 시작하며, 2초가 지나도 1f 상태를 유지합니다.
-            _currentThrowGauge = Mathf.Clamp01(holdDuration / gaugeChargeTime);
+            // 던지기로 바뀌는 순간(0.2초)부터 게이지가 보인다. 그 전에 떼면 툭 내려놓기라 게이지를 띄우지 않는다.
+            // 값은 힘 계산과 같은 비율이라 처음 보일 때 이미 조금 차 있고, 1.5초가 지나도 1f를 유지한다
+            _currentThrowGauge = holdDuration >= THROW_HOLD_THRESHOLD ? Mathf.Clamp01(holdDuration / gaugeChargeTime) : 0f;
         }
+
+        UpdateThrowChargeSound();
+    }
+
+    // 던지기로 인정되는 순간(0.2초)부터 게이지를 따라 피치가 올라가는 충전음을 낸다. 툭 내려놓는 짧은 입력에서는 안 난다
+    private void UpdateThrowChargeSound()
+    {
+        bool charging = _isChargingThrow && Time.time - _dropKeyPressTime >= THROW_HOLD_THRESHOLD;
+        if (!charging)
+        {
+            if (_throwChargeSource != null && _throwChargeSource.isPlaying) _throwChargeSource.Stop();
+            return;
+        }
+
+        if (_throwChargeSource == null)
+        {
+            if (throwChargeSound == null || SoundManager.Instance == null) return;
+            _throwChargeSource = SoundManager.Instance.CreateLoopSource(throwChargeSound, transform);
+            if (_throwChargeSource == null) return;
+            _throwChargeSource.volume = throwChargeSound.Volume;
+        }
+
+        float pitch = Mathf.Lerp(throwChargePitch.x, throwChargePitch.y, _currentThrowGauge);
+        // 다 찼으면 살짝 떨려서 "준비됐다"는 느낌을 준다
+        if (_currentThrowGauge >= 1f) pitch += Mathf.Sin(Time.time * 40f) * 0.03f;
+        _throwChargeSource.pitch = pitch;
+
+        if (!_throwChargeSource.isPlaying) _throwChargeSource.Play();
     }
 
     /// <summary>
@@ -84,7 +140,7 @@ public class PlayerInteraction : NetworkBehaviour
         // 1. 먼저 정밀한 Raycast 시도 (작은 아이템이라도 조준점에 정확히 걸리면 최우선)
         if (Physics.Raycast(ray, out RaycastHit rayHit, interactDistance, pickupLayerMask))
         {
-            if (rayHit.collider.TryGetComponent<PickupItem>(out PickupItem exactItem))
+            if (rayHit.collider.TryGetComponent<PickupItem>(out PickupItem exactItem) && !IsPickupBlocked(ray.origin, rayHit))
             {
                 return exactItem;
             }
@@ -103,8 +159,8 @@ public class PlayerInteraction : NetworkBehaviour
 
             if (hit.collider.TryGetComponent<PickupItem>(out PickupItem item))
             {
-                // 가장 가까운 거리에 있는 아이템 선택
-                if (hit.distance < closestDistance)
+                // 가려지지 않은 아이템 중 가장 가까운 거리에 있는 아이템 선택
+                if (hit.distance < closestDistance && !IsPickupBlocked(ray.origin, hit))
                 {
                     closestDistance = hit.distance;
                     bestItem = item;
@@ -113,6 +169,40 @@ public class PlayerInteraction : NetworkBehaviour
         }
 
         return bestItem;
+    }
+
+    // 아이템 표면에 딱 붙은 바닥에 걸려 가려졌다고 판정하지 않도록, 가림 검사는 아이템 표면 조금 앞에서 멈춘다
+    private const float PICKUP_BLOCK_CHECK_MARGIN = 0.05f;
+
+    /// <summary>
+    /// 카메라와 아이템 사이를 벽/바닥 등(pickupObstacleMask)이 가리고 있는지.
+    /// 줍기 레이캐스트는 아이템 레이어만 보므로, 따로 검사하지 않으면 벽 너머나 아래층 아이템도 잡힌다
+    /// </summary>
+    private bool IsPickupBlocked(Vector3 origin, RaycastHit itemHit)
+    {
+        // SphereCast가 시작부터 겹친 아이템은 위치 정보가 없지만, 카메라 바로 앞이라 가려질 수 없다
+        if (itemHit.distance <= 0f) return false;
+
+        Vector3 toItem = itemHit.point - origin;
+        float checkDistance = toItem.magnitude - PICKUP_BLOCK_CHECK_MARGIN;
+        if (checkDistance <= 0f) return false;
+
+        return Physics.Raycast(origin, toItem.normalized, checkDistance, pickupObstacleMask, QueryTriggerInteraction.Ignore);
+    }
+
+    /// <summary>
+    /// 조준선에 걸린 DraggableObject를 가져옵니다. 하이라이트와 끌기 시작이 같은 판정을 쓰도록 둘 다 이 함수를 사용합니다. <br/>
+    /// 콜라이더가 모델(자식)에 붙어 있는 경우가 많으므로 맞은 콜라이더의 부모까지 찾습니다.
+    /// </summary>
+    private DraggableObject GetTargetDraggable()
+    {
+        if (playerCamera == null) return null;
+
+        if (Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out RaycastHit hit, interactDistance, interactLayerMask))
+        {
+            return hit.collider.GetComponentInParent<DraggableObject>();
+        }
+        return null;
     }
 
     /// <summary>
@@ -125,6 +215,8 @@ public class PlayerInteraction : NetworkBehaviour
         // 이미 파쇄기를 끌고 있다면 줍기 스킵 (중복 방지)
         if (_activeDragableObject != null)
         {
+            if (!_gate.CanDo(PlayerAction.ReleaseDrag)) return;
+
             RequestStopDragServerRpc(new NetworkObjectReference(_activeDragableObject.NetworkObject));
             GetComponent<PlayerMovement>()?.SetDraggleObject(null);
             // 래그돌 손 뻗기 자세 해제
@@ -157,19 +249,15 @@ public class PlayerInteraction : NetworkBehaviour
         }
 
         // 3. 손에 아무것도 없고, 바라보는 곳에 파쇄기가 있는지 확인
-        if (playerCamera != null && Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out RaycastHit hit, interactDistance, interactLayerMask))
+        DraggableObject draggable = GetTargetDraggable();
+        if (draggable != null)
         {
-            if (hit.collider.TryGetComponent<DraggableObject>(out var draggable))
+            if (CanStartDrag(draggable))
             {
-                // 다른 사람이 끌고 있지 않고, 서버 검증과 같은 게이트를 통과할 때만 시작 (거절돼서 서버와 상태가 어긋나는 것 방지)
-                if (!draggable.IsBeingDragged && _gate.CanDo(PlayerAction.DragObject))
-                {
-                    draggable.SetHighlighted(true);
-                    _activeDragableObject = draggable;
-                    RequestStartDragServerRpc(new NetworkObjectReference(_activeDragableObject.NetworkObject));
-                    GetComponent<PlayerMovement>()?.SetDraggleObject(_activeDragableObject);
-                    return;
-                }
+                _activeDragableObject = draggable;
+                RequestStartDragServerRpc(new NetworkObjectReference(_activeDragableObject.NetworkObject));
+                GetComponent<PlayerMovement>()?.SetDraggleObject(_activeDragableObject);
+                return;
             }
         }
 
@@ -299,6 +387,23 @@ public class PlayerInteraction : NetworkBehaviour
         GetComponent<PlayerMovement>()?.SetDraggleObject(null);
     }
 
+    /// <summary>
+    /// 끌던 오브젝트를 놓습니다. 피격으로 쓰러지거나 남에게 붙잡히는 등 플레이어 의사와 무관하게 놓칠 때 호출합니다. [서버 전용] <br/>
+    /// 게이트는 끌기 '시작'만 막으므로, 끄는 도중 이런 상태가 되면 이렇게 직접 놓아야 한다 (잡기/들고 있는 아이템과 같은 방식)
+    /// </summary>
+    public void ServerReleaseDrag()
+    {
+        if (!IsServer) return;
+
+        PlayerMovement movement = GetComponent<PlayerMovement>();
+        DraggableObject draggable = movement != null ? movement.CurrentDraggingObject : null;
+        if (draggable != null)
+        {
+            // 놓으면 DraggableObject가 OnDragReleased로 서버/소유자 양쪽 끌기 상태를 정리한다
+            draggable.StopDrag();
+        }
+    }
+
     [ServerRpc]
     public void TryPickupServerRpc(NetworkObjectReference pickupReference)
     {
@@ -344,61 +449,186 @@ public class PlayerInteraction : NetworkBehaviour
 
     private void UpdateHoveredItem()
     {
-        // 줍기와 같은 탐색 함수를 사용해서 "하이라이트가 뜨면 반드시 주울 수 있음"을 보장
+        // 줍기/끌기와 같은 탐색 함수를 사용해서 "하이라이트가 뜨면 반드시 주울(끌) 수 있음"을 보장
         PickupItem newHoveredItem = GetTargetPickupItem();
-        DraggableObject newHoveredDraggable = null;
+        DraggableObject newHoveredDraggable = GetTargetDraggable();
 
-        if (playerCamera != null && Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out RaycastHit hit, interactDistance))
-        {
-            hit.collider.TryGetComponent<DraggableObject>(out newHoveredDraggable);
-        }
-
-        // 2. DraggableObject 하이라이트 갱신 로직
+        // 바라보는 대상이 바뀌면 이전 대상의 하이라이트를 끈다
         if (newHoveredDraggable != hoveredDraggable)
         {
-            // 이전 Draggable 하이라이트 끄기
             if (hoveredDraggable != null)
             {
                 hoveredDraggable.SetHighlighted(false);
             }
-
             hoveredDraggable = newHoveredDraggable;
+        }
 
-            // 새로운 Draggable 하이라이트 켜기 (끌기 시작 가능한 조건일 때만)
-            if (hoveredDraggable != null && !hoveredDraggable.IsBeingDragged)
+        if (newHoveredItem != hoveredItem)
+        {
+            SetHoveredHighlight(false);
+            hoveredItem = newHoveredItem;
+        }
+
+        // 대상이 그대로여도 상호작용 가능 여부는 바뀐다 (끌던 걸 놓은 직후, 손에 든 아이템을 내려놓은 뒤 등).
+        // 대상이 바뀔 때만 판정하면 그 상태로 계속 바라보는 동안 하이라이트가 안 켜지므로 매 프레임 다시 판정한다
+        if (hoveredDraggable != null)
+        {
+            hoveredDraggable.SetHighlighted(CanStartDrag(hoveredDraggable));
+        }
+        SetHoveredHighlight(CanPickupHoveredItem());
+
+        UpdateHoveredButton();
+        UpdatePrompt();
+    }
+
+    /// <summary>
+    /// 투표 버튼이나 차단기를 바라보면 아웃라인을 켠다. 투표 버튼은 쿨다운 중에도 켜서 남은 시간을 보여 준다
+    /// </summary>
+    private void UpdateHoveredButton()
+    {
+        Component target = null;
+
+        if (playerCamera != null
+            && Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out RaycastHit hit, interactDistance, interactLayerMask))
+        {
+            VoteManager vote = VoteManager.Instance;
+            VoteButton voteButton = hit.collider.GetComponentInParent<VoteButton>();
+            LightSwitch lightSwitch = hit.collider.GetComponentInParent<LightSwitch>();
+
+            if (voteButton != null && vote != null && vote.IsSpawned && vote.Phase.Value == VotePhase.None && _gate.CanDo(PlayerAction.CallVote))
             {
-                if (_gate.CanDo(PlayerAction.DragObject))
-                {
-                    hoveredDraggable.SetHighlighted(true);
-                }
+                target = voteButton;
+            }
+            else if (lightSwitch != null && _gate.CanDo(PlayerAction.ToggleLight) && CanUseLightSwitch(lightSwitch))
+            {
+                target = lightSwitch;
             }
         }
 
-        if (newHoveredItem == hoveredItem)
+        if (target == hoveredButton) return;
+
+        if (hoveredButton != null) PickupHighlight.SetHighlightedInChildren(hoveredButton, false);
+        hoveredButton = target;
+        if (hoveredButton != null) PickupHighlight.SetHighlightedInChildren(hoveredButton, true);
+    }
+
+    /// <summary>
+    /// 불이 켜져 있으면 마피아만 내릴 수 있고, 꺼져 있으면 누구나 길게 눌러 복구한다 (LightInteraction 서버 규칙과 같다)
+    /// </summary>
+    private bool CanUseLightSwitch(LightSwitch lightSwitch)
+    {
+        if (!lightSwitch.IsLightOn.Value) return true;
+
+        return TryGetComponent(out RoleManager role) && role.CurrentRole == PlayerRole.Mafia;
+    }
+
+    // 아이템 데이터가 없는 프리팹은 오브젝트 이름이라도 보여 주되, 생성할 때 붙는 "(Clone)"은 뗀다
+    private static string NameOf(PickupItem item)
+    {
+        return item.ItemData != null ? item.ItemData.LocalizedName : item.name.Replace("(Clone)", "").Trim();
+    }
+
+    /// <summary>
+    /// 아웃라인이 켜진 물체에 무엇을 할 수 있는지 키와 이름을 띄운다. 아웃라인과 같은 조건을 쓴다
+    /// </summary>
+    private void UpdatePrompt()
+    {
+        InteractPromptUI prompt = InteractPromptUI.Instance;
+        if (prompt == null) return;
+
+        Object target = null;
+        int variant = 0;
+
+        // 일시정지 메뉴(키 설정 포함)가 열려 있으면 감춘다. 닫으면 대상을 새로 잡으므로 바뀐 키가 바로 보인다
+        PauseMenuController menu = PauseMenuController.Instance;
+        bool paused = menu != null && menu.IsOpen;
+
+        PickupItem heldItem = GetCurrentHeldItem();
+
+        if (paused) target = null;
+        // 상자를 들고 초록 가이드가 뜨는 곳을 보면 배치 안내 (배치 키 처리와 같은 조건)
+        else if (heldItem != null && _placementPreview != null && _placementPreview.IsPreviewValid && _gate.CanDo(PlayerAction.PlaceBox))
         {
+            target = heldItem;
+            variant = PLACE_VARIANT;
+        }
+        else if (hoveredDraggable != null && CanStartDrag(hoveredDraggable)) target = hoveredDraggable;
+        else if (hoveredItem != null && CanPickupHoveredItem()) target = hoveredItem;
+        else if (hoveredButton != null) target = hoveredButton;
+
+        if (target == null)
+        {
+            _promptTarget = null;
+            prompt.Hide();
             return;
         }
 
-        SetHoveredHighlight(false);
+        if (target is VoteButton && VoteManager.Instance != null) variant = Mathf.CeilToInt(VoteManager.Instance.CooldownRemaining);
+        if (target is LightSwitch litSwitch) variant = litSwitch.IsLightOn.Value ? 1 : 2;   // 보고 있는 중에 불이 꺼지거나 켜지면 문구를 바꾼다
 
-        hoveredItem = newHoveredItem;
-
-        if (hoveredItem != null)
+        if (target != _promptTarget || variant != _promptVariant)
         {
-            // 1. 줍기 규칙(붙잡힘, 손 점유 등)은 게이트가 판정
-            if (!_gate.CanDo(PlayerAction.Pickup)) return;
-
-            // 2. 페인트 총(4번)을 들고 있을 때는 백팩(1~3번)에 자리가 있어야 함
-            if (_inventory != null
-                && _inventory.CurrentSlot == PlayerActionGate.PAINT_GUN_SLOT
-                && _inventory.IsBackpackFull())
+            _promptTarget = target;
+            _promptVariant = variant;
+            switch (target)
             {
-                return;
+                case DraggableObject draggable:
+                    _promptKey = InteractPromptUI.KeyOf(PICKUP_ACTION);
+                    _promptLabel = InteractPromptUI.Translate("interact_drag", draggable.LocalizedName);
+                    break;
+                case PickupItem item when variant == PLACE_VARIANT:
+                    _promptKey = InteractPromptUI.KeyOf(PICKUP_ACTION);
+                    _promptLabel = InteractPromptUI.Translate("interact_place", NameOf(item));
+                    break;
+                case PickupItem item:
+                    _promptKey = InteractPromptUI.KeyOf(PICKUP_ACTION);
+                    _promptLabel = InteractPromptUI.Translate("interact_pickup", NameOf(item));
+                    break;
+                case LightSwitch lightSwitch:
+                    _promptKey = InteractPromptUI.KeyOf(BUTTON_ACTION);
+                    _promptLabel = InteractPromptUI.Translate(lightSwitch.IsLightOn.Value ? "interact_use" : "interact_restore", lightSwitch.LocalizedName);
+                    break;
+                default:
+                    _promptKey = InteractPromptUI.KeyOf(BUTTON_ACTION);
+                    _promptLabel = VoteButton.PromptLabel(variant);
+                    break;
             }
-
-            // 위의 줍기 불가 조건을 모두 통과했다면 하이라이트를 킨다.
-            SetHoveredHighlight(true);
         }
+
+        prompt.Show(_promptKey, _promptLabel);
+    }
+
+    /// <summary>
+    /// 지금 이 DraggableObject를 끌기 시작할 수 있는지. 하이라이트와 끌기 시작이 같은 조건을 쓴다
+    /// </summary>
+    private bool CanStartDrag(DraggableObject draggable)
+    {
+        // 이미 끌고 있거나 끌기 요청을 보낸 상태면 하이라이트하지 않는다 (요청 후 동기화되기 전까지 IsBeingDragged가 false라서 따로 확인)
+        // 다른 사람이 끌고 있지 않고, 서버 검증과 같은 게이트를 통과할 때만 시작 (거절돼서 서버와 상태가 어긋나는 것 방지)
+        return _activeDragableObject == null
+            && !draggable.IsBeingDragged
+            && _gate.CanDo(PlayerAction.DragObject);
+    }
+
+    /// <summary>
+    /// 지금 바라보는 아이템을 주울 수 있는지
+    /// </summary>
+    private bool CanPickupHoveredItem()
+    {
+        if (hoveredItem == null) return false;
+
+        // 1. 줍기 규칙(붙잡힘, 손 점유 등)은 게이트가 판정
+        if (!_gate.CanDo(PlayerAction.Pickup)) return false;
+
+        // 2. 페인트 총(4번)을 들고 있을 때는 백팩(1~3번)에 자리가 있어야 함
+        if (_inventory != null
+            && _inventory.CurrentSlot == PlayerActionGate.PAINT_GUN_SLOT
+            && _inventory.IsBackpackFull())
+        {
+            return false;
+        }
+
+        return true;
     }
 
     public override void OnNetworkDespawn()
@@ -406,7 +636,11 @@ public class PlayerInteraction : NetworkBehaviour
         SetHoveredHighlight(false);
         hoveredItem = null;
 
-        // TODO: 디스폰 시 인벤토리에 든 아이템을 전부 내려놓기
+        if (hoveredButton != null) PickupHighlight.SetHighlightedInChildren(hoveredButton, false);
+        hoveredButton = null;
+        if (IsOwner && InteractPromptUI.Instance != null) InteractPromptUI.Instance.Hide();
+
+        // 혹시 인벤토리에 들고 있는 아이템이 있었으면 다 한번에 내려놓게 하기
     }
 
     private void SetHoveredHighlight(bool highlighted)
@@ -468,6 +702,23 @@ public class PlayerInteraction : NetworkBehaviour
         DropHeldItemStandard();
     }
     
+    /// <summary>
+    /// 투표룸·게임 종료 무대처럼 다른 곳으로 옮기기 전에 손을 비운다. 잡던 사람과 끌던 물건은 놓고,
+    /// 들고 있던 아이템은 가방에 넣은 채 빈손 슬롯(0)으로 바꾼다. 원래 슬롯을 돌려준다. [서버 전용]
+    /// </summary>
+    public int ServerEmptyHands()
+    {
+        if (!IsServer) return 0;
+
+        GetComponent<PlayerGrab>()?.ServerReleaseGrab();
+        ServerReleaseDrag();
+        if (_inventory == null) return 0;
+
+        int slot = _inventory.CurrentSlot;
+        _inventory.ServerForceSlot(0);
+        return slot;
+    }
+
     [ServerRpc]
     private void DropHeldItemServerRpc()
     {
@@ -550,6 +801,10 @@ public class PlayerInteraction : NetworkBehaviour
                 {
                     _lightInteraction.StartLightInteraction(lightSwitch);
                 }
+                else if (hit.collider.GetComponentInParent<VoteButton>() != null && VoteManager.Instance != null && _gate.CanDo(PlayerAction.CallVote))
+                {
+                    VoteManager.Instance.CallMeeting();
+                }
             }
         }
         else if (context.canceled)
@@ -597,20 +852,33 @@ public class PlayerInteraction : NetworkBehaviour
         // 던지는 플레이어 id구함
         ulong throwerNetId = this.NetworkObjectId;
         // 2. 누른 시간에 따라 분기 처리
-        if (holdDuration < 0.3f)
+        Vector3 soundPosition = currentHeldItem.transform.position;
+        if (holdDuration < THROW_HOLD_THRESHOLD)
         {
-            // 0.3초 미만: 그냥 앞에 툭 떨어뜨리기 (힘 0)
+            // 0.2초 미만: 그냥 앞에 툭 떨어뜨리기 (힘 0)
             currentHeldItem.ThrowFromServer(direction, 0f, Vector3.zero, throwerNetId);
+            PlayReleaseSoundClientRpc(soundPosition, false, 0f);
         }
         else
         {
-            // 0.3초 이상: 서버에서 Force를 연산하여 물리 발사
+            // 0.2초 이상: 서버에서 Force를 연산하여 물리 발사
             float clampedProgress = Mathf.Clamp01(holdDuration / gaugeChargeTime);
             float finalForce = Mathf.Lerp(minThrowForce, maxThrowForce, clampedProgress);
             float finalTorqueMagnitude = Mathf.Lerp(minThrowTorque, maxThrowTorque, clampedProgress);
             Vector3 randomTorque = Random.insideUnitSphere.normalized * finalTorqueMagnitude;
             currentHeldItem.ThrowFromServer(direction, finalForce, randomTorque, throwerNetId);
+            PlayReleaseSoundClientRpc(soundPosition, true, clampedProgress);
         }
+    }
+
+    // 내려놓기·던지기 소리. 세게 던질수록 크게 들린다
+    [ClientRpc]
+    private void PlayReleaseSoundClientRpc(Vector3 position, bool thrown, float strength)
+    {
+        SoundData sound = thrown ? throwSound : dropSound;
+        if (sound == null || SoundManager.Instance == null) return;
+
+        SoundManager.Instance.PlaySFXAt(sound, position, thrown ? Mathf.Lerp(0.6f, 1f, strength) : 1f);
     }
 
     #endregion

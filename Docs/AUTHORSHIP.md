@@ -3,7 +3,8 @@
 이 레포의 `Scripts/`는 팀 프로젝트의 스크립트 폴더를 그대로 가져온 것입니다(`git subtree`). 팀원의 코드도 함께 들어 있으므로, 제가 작성한 코드를 이 문서에 구분해 둡니다. 레포 루트의 `Shaders/`는 메인 프로젝트에서 따로 복사한 제 셰이더입니다.
 
 - 팀 구성: 클라이언트 프로그래머 2명(이윤형, 김도환), 모델러 1명
-- 기준 시점: 메인 레포 split 커밋 `c8a2c15`
+- 기준 시점: 메인 레포 split 커밋 `c8a2c15` (2026.10)
+- 추가 반영: 팀 레포 dev `5b1ee6a` (2026.11.15)까지의 변경 중 **제가 작업한 파일만** 다시 가져왔습니다. 팀원만 작업한 새 기능(긴급 투표, 빠른 매칭, 호스트 이전, 맵 선택, 로딩 화면 등)은 가져오지 않았습니다. 가져온 파일에 팀원이 함께 수정한 부분이 있으면 그대로 두고 아래 표에 적었습니다
 
 ## 한눈에 보기
 
@@ -21,13 +22,13 @@
 - 페인트·오염도 시스템
 - 아이템 상호작용과 인벤토리, 도구 아이템(테이저건·흡입기·폴라로이드 카메라·청소 도구)
 - 쓰레기·상자 배치
+- 게임 시작 배치(쓰레기·박스·도구·시작 페인트)와 시작 오염도 기준
+- 작업 지시서(튜토리얼), 시작 카운트다운, 맵 경계
 - 점수·역할 배정·게임 진행 흐름
 - 로비·방 설정과 접속 처리
 - 플레이어 이동·1인칭 시점의 기본 구조
 - 사운드 시스템
 - 에디터 툴: ComfyUI 연동 에셋 생성, 페인트 표면 ID 정리
-
-줄 수로는 `Scripts/`의 `.cs` 18,038줄 중 10,753줄(약 60%)을 제가 작성했습니다. 줄 수는 작업량의 근사치일 뿐 중요도를 뜻하지 않습니다.
 
 ## 1. 제 작업
 
@@ -41,6 +42,10 @@
 | 로비·방 설정·접속 | 방 설정(인원, 마피아 수, 플레이 시간, 오염도 배율)과 준비 상태를 동기화하고, 로비 캐릭터를 스폰합니다. 접속 승인에서는 게임 중 입장과 정원 초과를 거부하고, 연결이 끊기면 UI를 복구합니다 | `RoomSetting/RoomSettings.cs`\*, `RoomUIController.cs`\*, `LobbyFlowManager.cs`\*, `RoomPlayerEntryUI.cs`\*, `PlayerReady.cs`, `RoomMenuController.cs`, `RoomPlayerInfo.cs`, `Network/NetworkConnect.cs`\*, `Network/NetworkConnectTest.cs` (테스트용) |
 | 이동·시점 | 서버 권위 이동·점프(입력 ServerRpc → 서버에서 이동 처리)와 1인칭 카메라를 만들었습니다. 시선 상하 각도는 다른 클라이언트에 복제합니다 | `Player/PlayerMovement.cs`\*, `Player/FirstPersonLook.cs`\* |
 | 들기 자세 | 아이템을 양손으로 드는 래그돌 자세를 만들었습니다. 물건 그립 폭에 맞춰 팔을 벌리고 시선을 따라 움직입니다. 팀원이 만든 래그돌 위에 구현했습니다 | `Player/Ragdoll/RagdollPoser.cs`, `RagdollDriver.cs`, `RagdollNetworkSync.cs` 일부 (팀원 파일, 3-2 참고) |
+| 게임 시작 배치 | 참여 인원 × 1명당 기준 × 방장 배율로 쓰레기·박스·도구·시작 페인트를 깔고, 시작 오염 합계가 70%가 되도록 오염도 기준을 판마다 정합니다. 자리 찾기와 개수 나누기를 공통 베이스로 분리했습니다 | `Spawn/` 전체 (`SpawnPlacementBase`, `SpawnManagerBase`\*, `SpawnArea`, `Trash`·`Box`·`Tool`·`Paint` `SpawnManager`/`SpawnArea`, `PaintPattern`), `Editor/PaintPatternEditor.cs`, `Item/PaintGun/PaintDab.cs`, `Manager/ScoreManager.cs` |
+| 작업 지시서·시작 진행 | T로 여닫는 작업 지시서. 키 표시·점수·투표 시간을 설정 데이터에서 읽습니다. 역할 안내 동안 행동을 막는 시작 카운트다운 | `UI/InstructionSheetUI.cs`, `UI/StartCountdownUI.cs` |
+| 맵 경계 | 울타리 밖 투명 벽, 밖으로 나간 플레이어·물건·파쇄기를 서버가 안쪽으로 되돌림 | `Manager/MapBoundary.cs` |
+| 청소 도구 들기 자세 | 대걸레를 드는 래그돌 자세 | `Item/PaintGun/MopHoldPose.cs` |
 | 사운드 | SoundManager, BGM·SFX 재생, 표면별 발소리, UI 사운드, 타격음 | `Sound/` 전체 (`SoundManager`, `BgmPlayer`, `SfxPlayer`, `SoundData`, `SceneBgm`, `ImpactSound`, `Footstep/`, `UI/`), `Player/PlayerPunch.cs` 일부 (팀원 파일, 3-2 참고) |
 | 두꺼비집 | 길게 눌러 조명을 켜고 끄는 상호작용. 게이지 UI가 있고 서버에서 검사합니다 | `Light/LightSwitch.cs`, `Player/LightInteraction.cs` |
 | 에디터 툴 | ComfyUI와 연동해 2D 이미지 생성 → 수락/거절 → 3D 변환 → 프로젝트 임포트·씬 배치까지 자동화했습니다. 페인트 표면의 네트워크 식별자(Surface ID)를 일괄로 다시 할당하는 툴도 만들었습니다 | `AI/ComfyUIController.cs`, `AI/AIAssetGenerator.cs`, `Editor/PaintableSurfaceEditor.cs` |
@@ -78,6 +83,7 @@
 | `RoomSetting/RoomUIController.cs` | 방 설정 UI, 호스트 전용 조작, 플레이어 목록·준비 상태 갱신, 설정값 입력 처리 | 대기방 UI 개편 (빈 자리 표시, 준비 배지, 키 입력으로 준비 토글) |
 | `RoomSetting/LobbyFlowManager.cs` | 로비 캐릭터 스폰, 인게임 씬 전환 | `RoomSettings`를 씬에 두지 않고 한 번만 스폰하도록 변경 |
 | `RoomSetting/RoomPlayerEntryUI.cs` | 플레이어 이름·사진·준비·호스트 표시 | 빈 자리 표시 (`SetEmpty`) |
+| `Spawn/SpawnManagerBase.cs`, `Spawn/TrashSpawnManager.cs` | 배치 규칙, 구역별 개수 나누기, 쓰레기 점수 합계 전달 | 연결 코드 몇 줄 |
 | `Network/NetworkConnect.cs` | 연결 승인(게임 중 입장 거부, 정원 초과 거부), 연결 끊김 처리와 UI 복구, Steam Relay 접속 대상 설정 | 메인 화면 호스트 시작과 초대 코드 접속 (`StartHosting`, `TryJoin`), 씬 재진입 시 UI 인계, 방 코드 생성 |
 | `Player/PlayerMovement.cs` | 서버 권위 이동 구조(입력 ServerRpc → 서버에서 이동·점프 처리), 테이저 감전 둔화, 끌기 상태, UI가 열렸을 때 이동 입력 차단 | 래그돌 소유 등록, 붙잡힌 상태 이동, 점프 버퍼·코요테 타임·낙하 가속, 채팅 중 입력 비우기 |
 | `Player/FirstPersonLook.cs` | 1인칭 카메라 기본 구조(소유자만 카메라·오디오 활성), 다른 클라이언트에 시선 상하 각도 복제(들기 자세용), 조준 시 Near Clip 전환 | 시점 회전 계산과 서버 전송, 목 기준 카메라 공전, 감도·Y축 반전·시야각 설정 적용, 1인칭 자기 몸 레이어 숨김 |
@@ -93,6 +99,9 @@
 | `Player/Ragdoll/RagdollNetworkSync.cs` | 외부에서 래그돌에 접근하는 조회 API (`Poser`, `BoneCount`, `GetBone`) — 들기 자세와 테이저 박힘 연출에서 사용 |
 | `Player/PlayerActionGate.cs` | 끌기(Drag) 규칙과 상태 판정, UI가 열렸을 때 이동·시점을 포함한 모든 행동 차단 (`SetUIOpen`) |
 | `Player/PlayerPunch.cs` | 휘두르기·타격 사운드: 서버가 타격을 판정한 뒤 ClientRpc로 재생, 맞은 물체별 소리 선택 |
+| `Player/PlayerKnockdown.cs`, `PlayerDive.cs` | 돌진 사운드, 쓰러진 동안 래그돌이 부딪히면 서버가 감지해 충돌음 재생 (일정 속도 미만 무시, 간격 제한, 세기 비례) |
+| `Editor/ItemIconGenerator.cs` | 파쇄기·박스 지정 구역·긴급 투표 버튼 그림 메뉴 (작업 지시서용), 첫 렌더 텍스처가 덜 그려져 노랗게 찍히던 문제 수정 |
+| `Manager/MapInfo.cs` | 스폰 지점을 판마다 섞어 배정, 씬 뷰에 스폰 지점을 플레이어 크기 캡슐·방향·번호로 표시 |
 
 ## 구분 방법
 
@@ -100,6 +109,11 @@
 - GitHub squash merge 커밋은 PR 작성자 한 명에게 몰리므로, 커밋 본문에 남은 원본 커밋 목록을 원본 커밋의 작성자와 대조했습니다.
 - 파일을 처음 만든 사람을 기준으로 나누고, 상대방이 추가한 부분은 기능 단위로 따로 적었습니다.
 - 현재 코드에 제가 쓴 줄이 없거나, 남아 있는 줄이 `using` 선언이나 필드 몇 줄뿐인 파일은 팀원 작업으로 분류했습니다.
+
+## 분리 이후 추가분 (2026.10 ~ 11)
+
+- `c8a2c15` 이후의 변경은 팀 레포에서 파일 단위로 다시 가져와 커밋 하나로 반영했습니다. 그래서 이 레포의 `git blame`에서는 그 부분이 반영 커밋으로 보입니다. 위 표의 작성자 구분은 팀 레포의 `git blame -w` 결과를 기준으로 적었습니다.
+- 이 레포에서만 고친 내용(페인트·청소 요청의 반경을 서버 값으로 고정하고 사거리를 다시 검증, 청소 도구와 카메라 촬영의 인터페이스 처리, 이동 입력 크기 제한)은 다시 가져올 때 유지했습니다.
 
 ## 직접 확인하는 방법
 

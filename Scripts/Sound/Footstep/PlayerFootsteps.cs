@@ -36,6 +36,21 @@ public class PlayerFootsteps : MonoBehaviour
     [Range(0f, 1f)]
     [SerializeField] private float localPlayerVolumeScale = 0.6f;
 
+    [Header("착지")]
+    [Tooltip("착지할 때 쿵 소리 (SO/Sound/SFX/LandSound). 발밑 표면의 발소리도 같이 난다")]
+    [SerializeField] private SoundData landSound;
+
+    [Tooltip("이 속도(m/s)보다 빠르게 떨어지다 땅에 닿으면 착지 소리")]
+    [SerializeField] private float minLandingSpeed = 3f;
+
+    [Tooltip("이 낙하 속도(m/s)에서 착지 소리가 가장 크다")]
+    [SerializeField] private float maxLandingSpeed = 15f;
+
+    [Tooltip("착지 소리 뒤 첫 발소리까지의 시간(초). 계속 걷고 있으면 이 시간이 지나자마자 발소리가 난다")]
+    [SerializeField] private float landingStepDelay = 0.25f;
+    [Tooltip("살짝 얹히듯 착지할 때(사다리 가로대·턱 위로 점프해 올라섬) 발소리 크기. 떨어지는 속도가 거의 없어 쿵 소리는 내지 않고 밟은 표면 소리만 낸다")]
+    [SerializeField, Range(0f, 1f)] private float softLandingVolume = 0.7f;
+
     [Header("이펙트")]
     [Tooltip("걸음마다 발밑에 띄울 이펙트 (루트에 ParticleSystem이 있는 프리팹, 예: Prefab/VFX/Footstep). 비워두면 없음")]
     [SerializeField] private ParticleSystem stepEffect;
@@ -59,6 +74,12 @@ public class PlayerFootsteps : MonoBehaviour
     private float _distanceSinceStep;
     private float _smoothedSpeed;
 
+    // 착지 판정. 발밑에 바닥이 없을 때만 공중으로 보므로 계단을 내려가는 건 착지가 아니다
+    private float _lastY;
+    private bool _airborne;
+    private float _fallSpeed;   // 이번 공중 구간에서 가장 빨랐던 하강 속도
+    private float _stepBlockedUntil;   // 착지 소리와 발소리가 겹치지 않게 잠시 막는다
+
     // 걸음 이펙트 풀. 플레이어를 따라다니지 않고 밟은 자리에 남도록 플레이어 밖에 둔다
     private Transform _effectRoot;
     private readonly List<ParticleSystem> _effectPool = new List<ParticleSystem>();
@@ -74,6 +95,8 @@ public class PlayerFootsteps : MonoBehaviour
     private void OnEnable()
     {
         _lastPosition = transform.position;
+        _lastY = _lastPosition.y;
+        _airborne = false;
         ResetStride();
     }
 
@@ -87,6 +110,8 @@ public class PlayerFootsteps : MonoBehaviour
     {
         float deltaTime = Time.deltaTime;
         if (deltaTime <= 0f) return;
+
+        UpdateLanding(deltaTime);
 
         Vector3 position = transform.position;
         Vector3 delta = position - _lastPosition;
@@ -110,6 +135,14 @@ public class PlayerFootsteps : MonoBehaviour
             return;
         }
 
+        // 공중이거나 막 착지한 직후에는 발소리를 내지 않는다 (착지 직전·직후 발소리가 착지 소리와 겹친다).
+        // 막힌 동안 한 걸음을 채워 두므로, 풀리자마자 계속 걷고 있으면 바로 첫 발소리가 난다
+        if (_airborne || Time.time < _stepBlockedUntil)
+        {
+            _distanceSinceStep = stepDistance;
+            return;
+        }
+
         _distanceSinceStep += moved;
         if (_distanceSinceStep < stepDistance) return;
 
@@ -125,23 +158,119 @@ public class PlayerFootsteps : MonoBehaviour
     {
         if (profile == null) return;
 
-        // 발밑 바닥 확인 = 땅에 있는지 + 무슨 표면인지
-        Vector3 origin = transform.position;
+        // 바닥을 못 찾음 = 공중 (점프 등) → 무음, 이펙트 없음
+        if (!FindGround(out RaycastHit ground)) return;
+
+        SurfaceType surface = FootstepSurface.Resolve(ground.collider);
+        SoundManager.Instance?.PlaySFXAt(profile.GetSound(surface), ground.point, CurrentVolumeScale);
+        PlayStepEffect(ground.point, ground.normal);
+    }
+
+    // 발밑 바닥 확인 = 땅에 있는지 + 어디를 밟았는지
+    private bool FindGround(out RaycastHit ground)
+    {
         float rayLength = FootOffset + groundCheckDistance;
-        int count = Physics.RaycastNonAlloc(origin, Vector3.down, _groundHits, rayLength, ~0, QueryTriggerInteraction.Ignore);
+        int count = Physics.RaycastNonAlloc(transform.position, Vector3.down, _groundHits, rayLength, ~0, QueryTriggerInteraction.Ignore);
         System.Array.Sort(_groundHits, 0, count, HitDistanceComparer);
 
         for (int i = 0; i < count; i++)
         {
-            Collider ground = _groundHits[i].collider;
-            if (IsPlayerBody(ground)) continue;
+            if (IsPlayerBody(_groundHits[i].collider)) continue;
+            ground = _groundHits[i];
+            return true;
+        }
 
-            SurfaceType surface = FootstepSurface.Resolve(ground);
-            SoundManager.Instance?.PlaySFXAt(profile.GetSound(surface), _groundHits[i].point, CurrentVolumeScale);
-            PlayStepEffect(_groundHits[i].point, _groundHits[i].normal);
+        // 사다리 가로대·난간·계단 모서리처럼 몸 가장자리로 걸쳐 서 있으면 가운데 레이는 허공을 찍는다.
+        // 몸 굵기만 한 구를 발바닥까지 쓸어서 한 번 더 찾는다
+        float radius = BodyRadius * SIDE_PROBE_RADIUS_RATIO;
+        float sweep = Mathf.Max(0f, FootOffset - radius) + groundCheckDistance;
+        count = Physics.SphereCastNonAlloc(transform.position, radius, Vector3.down, _groundHits, sweep, ~0, QueryTriggerInteraction.Ignore);
+        System.Array.Sort(_groundHits, 0, count, HitDistanceComparer);
+
+        for (int i = 0; i < count; i++)
+        {
+            // 시작부터 겹친 것(옆 벽 등)은 맞은 지점을 알 수 없어 건너뛴다
+            if (_groundHits[i].distance <= 0f || IsPlayerBody(_groundHits[i].collider)) continue;
+            ground = _groundHits[i];
+            return true;
+        }
+
+        ground = default;
+        return false;
+    }
+
+    private const float SIDE_PROBE_RADIUS_RATIO = 0.9f; // 몸보다 살짝 가늘게 쓸어야 옆 벽을 바닥으로 잡지 않는다
+
+    // 캐릭터 캡슐 반지름 (월드)
+    private float BodyRadius => _characterController != null
+        ? _characterController.radius * Mathf.Max(transform.lossyScale.x, transform.lossyScale.z)
+        : 0.3f;
+
+    // 점프나 낙하 뒤 땅에 닿으면 표면 발소리 + 쿵 소리를 낸다. 세게 떨어질수록 크다
+    private void UpdateLanding(float deltaTime)
+    {
+        float y = transform.position.y;
+        float verticalSpeed = (y - _lastY) / deltaTime;
+        _lastY = y;
+
+        // 순간이동이나 넉다운(래그돌)은 착지로 치지 않는다
+        if (Mathf.Abs(verticalSpeed * deltaTime) > teleportDistance || (_knockdown != null && _knockdown.IsDown))
+        {
+            _airborne = false;
+            _fallSpeed = 0f;
             return;
         }
-        // 바닥을 못 찾음 = 공중 (점프 등) → 무음, 이펙트 없음
+
+        if (!_airborne)
+        {
+            // 위아래로 움직일 때만 발밑을 확인한다 (평지를 걷는 동안은 레이를 쏘지 않는다)
+            if (Mathf.Abs(verticalSpeed) > 1f && !FindGround(out _))
+            {
+                _airborne = true;
+                _fallSpeed = 0f;
+            }
+            return;
+        }
+
+        if (verticalSpeed < 0f) _fallSpeed = Mathf.Max(_fallSpeed, -verticalSpeed);
+        if (verticalSpeed > 0.5f || !FindGround(out RaycastHit ground)) return;   // 아직 올라가는 중이거나 공중
+
+        _airborne = false;
+        if (_fallSpeed >= minLandingSpeed) PlayLanding(ground, _fallSpeed);
+        else PlaySoftLanding(ground);
+        _fallSpeed = 0f;
+    }
+
+    private void PlayLanding(RaycastHit ground, float fallSpeed)
+    {
+        SoundManager sound = SoundManager.Instance;
+        if (sound == null) return;
+
+        float strength = Mathf.InverseLerp(minLandingSpeed, maxLandingSpeed, fallSpeed);
+        float volume = Mathf.Lerp(0.6f, 1.5f, strength);
+        if (_networkObject != null && _networkObject.IsOwner) volume *= localPlayerVolumeScale;
+
+        SoundData surfaceSound = profile != null ? profile.GetSound(FootstepSurface.Resolve(ground.collider)) : null;
+        if (surfaceSound != null) sound.PlaySFXAt(surfaceSound, ground.point, volume);
+        if (landSound != null) sound.PlaySFXAt(landSound, ground.point, volume);
+        PlayStepEffect(ground.point, ground.normal);
+
+        // 착지하자마자 걸음 소리가 겹치지 않게 잠시 막는다
+        _stepBlockedUntil = Time.time + landingStepDelay;
+    }
+
+    // 점프 꼭대기에서 가로대·턱에 얹히듯 올라서면 떨어지는 속도가 거의 없다. 쿵 소리 없이 밟은 표면 소리만 낸다
+    private void PlaySoftLanding(RaycastHit ground)
+    {
+        SoundManager sound = SoundManager.Instance;
+        SoundData surfaceSound = profile != null ? profile.GetSound(FootstepSurface.Resolve(ground.collider)) : null;
+        if (sound == null || surfaceSound == null) return;
+
+        // 걷는 속도와 상관없이 일정하게 (점프해 올라설 때는 수평 속도가 거의 없어 걸음 크기 배율이 최저로 깎인다)
+        float volume = softLandingVolume;
+        if (_networkObject != null && _networkObject.IsOwner) volume *= localPlayerVolumeScale;
+        sound.PlaySFXAt(surfaceSound, ground.point, volume);
+        _stepBlockedUntil = Time.time + landingStepDelay;
     }
 
     /// <summary>

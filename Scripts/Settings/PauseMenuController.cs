@@ -43,11 +43,30 @@ public class PauseMenuController : SceneSingleton<PauseMenuController>
         // 키 입력을 기다리는 중이면 그쪽이 취소로 먹는다
         if (RebindEntryUI.ConsumesEscape) return;
 
+        // 결과 화면에서는 ESC를 받지 않는다. 메뉴를 열었다 닫으면 커서가 잠겨 "대기방으로" 버튼을 못 누른다
+        InGameUIController inGameUI = InGameUIController.Instance;
+        if (inGameUI != null && inGameUI.IsResultShown) return;
+
+        // 작업 지시서가 열려 있으면 그것부터 닫는다
+        InstructionSheetUI sheet = InstructionSheetUI.Instance;
+        if (sheet != null && sheet.IsOpen)
+        {
+            sheet.Close();
+            return;
+        }
+
         // 채팅창이 열려 있으면 그것부터 닫는다
         ChatUIController chat = ChatUIController.Instance;
         if (chat != null && chat.IsOpen)
         {
             chat.Close();
+            return;
+        }
+
+        VoteUIController vote = VoteUIController.Instance;
+        if (vote != null && vote.IsOpen)
+        {
+            vote.Close();
             return;
         }
 
@@ -74,10 +93,8 @@ public class PauseMenuController : SceneSingleton<PauseMenuController>
     {
         SetOpen(false);
 
-        // 나가는 곳은 마우스로 쓰는 화면이다. SetOpen이 다시 잠근 커서를 풀어 준다
-        Cursor.lockState = CursorLockMode.None;
-        Cursor.visible = true;
-
+        // 스스로 나가는 것이므로 방장 위임으로 다시 접속하지 않는다
+        if (HostMigration.Instance != null) HostMigration.Instance.Forget();
         if (NetworkManager.Singleton != null) NetworkManager.Singleton.Shutdown();
         SceneManager.LoadScene(leaveSceneName);
     }

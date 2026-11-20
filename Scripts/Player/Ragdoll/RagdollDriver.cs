@@ -163,6 +163,8 @@ public class RagdollDriver : MonoBehaviour
     public Vector3 LocalVelocity =>
         _playerTransform.InverseTransformDirection(_playerMovement.Velocity);
 
+    public bool IsGrounded => _playerMovement.IsGrounded;
+
     /// <summary>
     /// 현재 죽은 척 상태 여부
     /// </summary>
@@ -816,6 +818,25 @@ public class RagdollDriver : MonoBehaviour
     }
 
     /// <summary>
+    /// 몸 전체를 from 기준으로 turn만큼 돌려 to로 옮긴다. Player를 먼저 옮긴 뒤 호출한다. [서버 전용]
+    /// </summary>
+    public void Teleport(Vector3 from, Vector3 to, Quaternion turn)
+    {
+        transform.SetPositionAndRotation(to + turn * (transform.position - from), turn * transform.rotation);
+        Physics.SyncTransforms();
+
+        foreach (Rigidbody body in _boneBodies)
+        {
+            if (body == null || body.isKinematic) continue;
+
+            body.linearVelocity = Vector3.zero;
+            body.angularVelocity = Vector3.zero;
+        }
+
+        SnapAnchorToPlayer();
+    }
+
+    /// <summary>
     /// 앵커를 Player 좌표계로 순간이동. MovePosition과 달리 속도가 실리지 않는다.
     /// </summary>
     private void SnapAnchorToPlayer()
@@ -912,6 +933,12 @@ public class RagdollDriver : MonoBehaviour
 
     /// <summary>뼈가 외부 물체에 마지막으로 닿은 시각. 기상 타이밍(착지) 판정용.</summary>
     public float LastContactTime => _lastContactTime;
+
+    /// <summary>[서버] 쓰러진 동안(펀치·돌진) 뼈가 바깥 물체(벽·땅 등)에 부딪힌 순간. 부딪힌 지점과 상대 속도(m/s)</summary>
+    public event System.Action<Vector3, float> Impacted;
+
+    /// <summary>[서버] 쓰러진 동안의 부딪힘을 알린다. RagdollGroundContact가 호출한다</summary>
+    public void ReportImpact(Vector3 point, float speed) => Impacted?.Invoke(point, speed);
 
     /// <summary>뼈가 외부 물체에 닿았음을 기록. RagdollGroundContact가 호출한다.</summary>
     public void ReportGroundContact()

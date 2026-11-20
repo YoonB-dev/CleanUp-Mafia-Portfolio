@@ -53,6 +53,22 @@ public class MagnetAttractor : NetworkBehaviour, IUsableItem
         new AttractTarget { category = PickupCategory.Box, forceMultiplier = 0.5f },
     };
 
+    [Header("VFX")]
+    [Tooltip("흡입 중에 켜지는 이펙트 프리팹 (VFX_Vacuum_Suction)")]
+    [SerializeField] private VacuumSuctionVFXController suctionEffectPrefab;
+    [Tooltip("이펙트를 붙일 위치. 흡입구 3개가 모델의 입구에 맞도록 정렬된 기준점")]
+    [SerializeField] private Transform suctionEffectAnchor;
+
+    [Header("Sound")]
+    [Tooltip("켤 때 한 번 (SO/Sound/SFX/Item/VacuumStartSound)")]
+    [SerializeField] private SoundData startSound;
+    [Tooltip("흡입하는 동안 반복 (SO/Sound/SFX/Item/VacuumSound)")]
+    [SerializeField] private SoundData loopSound;
+    [Tooltip("끌 때 한 번 (SO/Sound/SFX/Item/VacuumEndSound)")]
+    [SerializeField] private SoundData endSound;
+    [Tooltip("켜는 소리가 이만큼(초) 나온 뒤 반복음을 이어 붙인다")]
+    [SerializeField] private float loopStartDelay = 0.4f;
+
     [System.Serializable]
     private struct AttractTarget
     {
@@ -64,6 +80,9 @@ public class MagnetAttractor : NetworkBehaviour, IUsableItem
     // ===== 내부 변수 =====
     private PickupItem _thisPickupItem;
     private Transform _actualNozzlePoint;
+    private VacuumSuctionVFXController _suctionEffect;
+    private bool _isSuctionOn;
+    private AudioSource _loopSource;
 
     private readonly NetworkVariable<bool> _isMagnetActive = new NetworkVariable<bool>(
         false,
@@ -77,6 +96,51 @@ public class MagnetAttractor : NetworkBehaviour, IUsableItem
     {
         _thisPickupItem = GetComponent<PickupItem>();
         _actualNozzlePoint = nozzlePoint != null ? nozzlePoint : transform;
+
+        // 꺼진 상태로 생성되고, 흡입 상태에 따라 Update에서 켜고 끈다
+        if (suctionEffectPrefab != null)
+        {
+            _suctionEffect = Instantiate(suctionEffectPrefab, suctionEffectAnchor != null ? suctionEffectAnchor : transform);
+        }
+    }
+
+    private void Update()
+    {
+        // 흡입 상태는 NetworkVariable로 모든 클라이언트에 복제되므로, 각자 같은 조건으로 이펙트와 소리를 켜고 끈다
+        if (!IsSpawned) return;
+
+        bool on = _isMagnetActive.Value && _thisPickupItem.IsHeld;
+        if (on == _isSuctionOn) return;
+
+        _isSuctionOn = on;
+        if (_suctionEffect != null) _suctionEffect.SetSuctionActive(on);
+        PlaySuctionSound(on);
+    }
+
+    // 켤 때 시작음 → 이어서 반복음, 끌 때 반복음을 멈추고 끝음
+    private void PlaySuctionSound(bool on)
+    {
+        SoundManager sound = SoundManager.Instance;
+        if (sound == null) return;
+
+        Vector3 position = _actualNozzlePoint.position;
+        if (on)
+        {
+            if (startSound != null) sound.PlaySFXAt(startSound, position);
+            if (loopSound == null) return;
+
+            if (_loopSource == null) _loopSource = sound.CreateLoopSource(loopSound, _actualNozzlePoint);
+            if (_loopSource == null) return;
+
+            _loopSource.volume = loopSound.Volume;
+            _loopSource.PlayDelayed(startSound != null ? loopStartDelay : 0f);
+        }
+        else
+        {
+            // 예약만 된 상태에서 꺼도 Stop이 예약을 취소한다
+            if (_loopSource != null) _loopSource.Stop();
+            if (endSound != null) sound.PlaySFXAt(endSound, position);
+        }
     }
     public void OnUse(InputAction.CallbackContext context, Camera playerCamera)
     {

@@ -31,6 +31,15 @@ public class PickupItem : NetworkBehaviour
     [SerializeField] private bool overrideCarryAnchorOffset = false;
     [Tooltip("CarryAnchor 기준 오프셋 (X:좌우, Y:위아래, Z:앞뒤)")]
     [SerializeField] private Vector3 carryAnchorOffset = new Vector3(0f, 0.1f, 0.3f);
+    [Header("Sound")]
+    [Tooltip("주울 때 아이템 자리에서 나는 소리 (SO/Sound/SFX/Item/PickupSound). 비워 두면 소리 없음")]
+    [SerializeField] private SoundData pickupSound;
+    // 놓을 때 벽 너머로 넘어가지 않게 하는 판정 (Default, Ground, Wall, Floor, Stair)
+    private const int RELEASE_BLOCK_MASK = (1 << 0) | (1 << 6) | (1 << 8) | (1 << 11) | (1 << 13);
+    private const float RELEASE_CAST_RADIUS = 0.15f;  // 머리가 벽에 붙어 있어도 시작부터 겹치지 않을 크기
+    private const float MAX_RELEASE_HALF_SIZE = 0.6f; // 대걸레처럼 긴 물건도 이 이상 당기지는 않는다
+    private const float RELEASE_WALL_GAP = 0.03f;
+    private readonly RaycastHit[] _releaseHits = new RaycastHit[16];
     private PlayerInteraction _holder;
     public PlayerInteraction Holder => _holder;
     public PlayerInteraction LastHolder { get; private set; }
@@ -156,6 +165,9 @@ public class PickupItem : NetworkBehaviour
     [ClientRpc]
     private void AttachToHolderClientRpc(ulong holderNetId)
     {
+        // 손으로 옮겨 붙기 전, 아이템이 놓여 있던 자리에서 소리를 낸다
+        if (pickupSound != null && SoundManager.Instance != null) SoundManager.Instance.PlaySFXAt(pickupSound, transform.position);
+
         // 컴포넌트 초기화 타이밍을 확보하기 위해 코루틴으로 실행
         StartCoroutine(AttachToHolderCoroutine(holderNetId));
     }
@@ -260,6 +272,8 @@ public class PickupItem : NetworkBehaviour
             // 던진 사람 손 앞의 정확한 월드 좌표 도출
             targetWorldPos = throwerTransform.TransformPoint(new Vector3(0, carryHeight, carryDistance));
             targetWorldRot = throwerTransform.rotation;
+            // 벽에 붙어 서서 놓으면 손 앞 자리가 벽 너머일 수 있다. 벽 이쪽에서 놓이게 당겨 온다
+            targetWorldPos = KeepReleaseOutOfWalls(throwerTransform.position, targetWorldPos, throwerNetObj.transform);
             // 손 앞에서 시작하는 이유: NetworkObject를 비활성화한 상태라 동기화 지연 때문에 순간이동하는 것처럼 보이기 때문
 
             // 오프셋을 기본값으로 복원 (다음 아이템이 기본 오프셋을 쓸 수 있도록)
@@ -313,6 +327,44 @@ public class PickupItem : NetworkBehaviour
                 _networkTransform.Teleport(transform.position, transform.rotation, transform.localScale);
             }
         }
+    }
+
+    /// <summary>
+    /// 던진 사람 머리(카메라)에서 놓을 자리까지 이 물건 크기만 한 구를 밀어 보고, 벽·바닥·가구에 막히면 그 앞에 놓는다.
+    /// 던진 사람 몸(래그돌 포함)과 굴러다니는 물건은 무시한다
+    /// </summary>
+    private Vector3 KeepReleaseOutOfWalls(Vector3 origin, Vector3 target, Transform thrower)
+    {
+        Vector3 toTarget = target - origin;
+        float distance = toTarget.magnitude;
+        if (distance < 1e-3f) return target;
+
+        // 물건 크기 (렌더러 경계의 가장 긴 반지름). 구는 너무 크면 시작부터 벽에 겹쳐 벽을 놓치므로 작게 쓰고 나머지는 거리로 뺀다
+        float halfSize = 0.1f;
+        foreach (Renderer r in GetComponentsInChildren<Renderer>())
+        {
+            Vector3 e = r.bounds.extents;
+            halfSize = Mathf.Max(halfSize, Mathf.Max(e.x, Mathf.Max(e.y, e.z)));
+        }
+        halfSize = Mathf.Min(halfSize, MAX_RELEASE_HALF_SIZE);
+        float castRadius = Mathf.Min(halfSize, RELEASE_CAST_RADIUS);
+        float padding = halfSize - castRadius + RELEASE_WALL_GAP;
+
+        Vector3 direction = toTarget / distance;
+        int count = Physics.SphereCastNonAlloc(origin, castRadius, direction, _releaseHits, distance + padding, RELEASE_BLOCK_MASK, QueryTriggerInteraction.Ignore);
+        float nearest = float.PositiveInfinity;
+        for (int i = 0; i < count; i++)
+        {
+            RaycastHit hit = _releaseHits[i];
+            if (hit.distance <= 0f || hit.distance >= nearest) continue;
+            if (hit.rigidbody != null && !hit.rigidbody.isKinematic) continue;
+            if (hit.collider.transform.IsChildOf(thrower) || hit.collider.transform.IsChildOf(transform)) continue;
+            if (hit.collider.GetComponentInParent<RagdollDriver>() != null) continue;
+            nearest = hit.distance;
+        }
+
+        if (float.IsPositiveInfinity(nearest)) return target;
+        return origin + direction * Mathf.Min(distance, Mathf.Max(0f, nearest - padding));
     }
 
     private void DropPos()

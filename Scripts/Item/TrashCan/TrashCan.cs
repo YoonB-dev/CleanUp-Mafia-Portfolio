@@ -28,8 +28,26 @@ public class TrashCan : NetworkBehaviour
     [Tooltip("쓰레기가 아닌 아이템을 튕겨낼 때 소리")]
     [SerializeField] private SoundData rejectSound;
 
+    [Header("VFX")]
+    [Tooltip("쓰레기가 들어갔을 때 파편이 튀는 이펙트 (VFX/Shredder/Prefabs/Shredder_FX). 일반 쓰레기통은 비워둔다")]
+    [SerializeField] private ShredderFX shredderEffectPrefab;
+    [Tooltip("이펙트를 붙일 위치. 파쇄기 모델과 같은 위치/회전이어야 투입구와 배출구가 맞는다")]
+    [SerializeField] private Transform shredderEffectAnchor;
+    [Tooltip("칼날 축을 돌리는 모터. 갈릴 때 빨라진다. 일반 쓰레기통은 비워둔다")]
+    [SerializeField] private ShredderMotor shredderMotor;
+
     // 아이템별 마지막으로 튕겨낸 시간 (서버 전용)
     private readonly Dictionary<PickupItem, float> _lastRejectTime = new Dictionary<PickupItem, float>();
+    private ShredderFX _shredderEffect;
+
+    private void Awake()
+    {
+        // 파쇄기를 끌고 다녀도 따라가도록 자식으로 둔다 (이미 나온 파편은 월드에 남는다)
+        if (shredderEffectPrefab != null)
+        {
+            _shredderEffect = Instantiate(shredderEffectPrefab, shredderEffectAnchor != null ? shredderEffectAnchor : transform);
+        }
+    }
 
     private void OnTriggerEnter(Collider other)
     {
@@ -151,7 +169,8 @@ public class TrashCan : NetworkBehaviour
     {
         // 쓰레기 종류별 소리(TrashData.cleanSFX)가 있으면 그걸, 없으면 공통 소리
         // (쓰레기 오브젝트는 곧 디스폰되므로 itemID로 데이터를 찾음)
-        if (ItemData.TryGetById(itemID, out TrashData data) && data.cleanSFX != null)
+        bool hasData = ItemData.TryGetById(itemID, out TrashData data);
+        if (hasData && data.cleanSFX != null)
         {
             SoundManager.Instance?.PlaySFXAt(data.cleanSFX, position);
         }
@@ -159,6 +178,13 @@ public class TrashCan : NetworkBehaviour
         {
             SoundManager.Instance?.PlaySFXAt(disposeSound, position);
         }
+
+        // 쓰레기 종류에 맞는 파편 (데이터를 못 찾으면 기본 플라스틱)
+        if (_shredderEffect != null)
+        {
+            _shredderEffect.PlayEntry(hasData ? data.shredKind : ShredderWasteKind.Plastic);
+        }
+        if (shredderMotor != null) shredderMotor.Grind();
     }
 
     [ClientRpc]

@@ -14,6 +14,10 @@ public class PlayerDive : NetworkBehaviour
     [SerializeField] private float thirdPersonOffset = 2.5f;
     [SerializeField] private float boxSweepRadius = 2f;
 
+    [Header("Sound")]
+    [Tooltip("몸을 날릴 때 나는 소리 (SO/Sound/SFX/DiveSound)")]
+    [SerializeField] private SoundData diveSound;
+
     private PlayerKnockdown _knockdown;
     private FirstPersonLook _fpLook;
     private PlayerActionGate _gate;
@@ -56,6 +60,7 @@ public class PlayerDive : NetworkBehaviour
         Vector3 dir = (transform.forward + Vector3.up * diveLift).normalized;
         Vector3 spin = transform.right * (diveForwardSpin * Mathf.Deg2Rad);
         _knockdown.ServerDive(dir * diveSpeed, spin);
+        PlayDiveSoundClientRpc();
         StartCoroutine(DiveRoutine());
     }
 
@@ -75,6 +80,13 @@ public class PlayerDive : NetworkBehaviour
         yield return new WaitForSeconds(cooldown);
         _canDive = true;
     }
+
+    [ClientRpc]
+    private void PlayDiveSoundClientRpc()
+    {
+        if (diveSound != null && SoundManager.Instance != null) SoundManager.Instance.PlaySFXAt(diveSound, transform.position);
+    }
+
 
     private void DemolishBoxesNear(Vector3 pos)
     {
